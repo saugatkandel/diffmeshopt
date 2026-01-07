@@ -1,3 +1,5 @@
+## Test repository created using Gemini code. Not working.
+
 # Differentiable Mesh Optimization for 3D Segmentation Refinement
 
 This project is a proof-of-concept for refining 3D segmentation boundaries using a self-supervised learning framework with differentiable surface meshes.
