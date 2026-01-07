@@ -1,7 +1,8 @@
-from skimage import measure
 import numpy as np
 import torch
 from pytorch3d.structures import Meshes
+from skimage import measure
+
 
 def segmentation_to_mesh(segmentation, level=0.5):
     """
@@ -14,11 +15,11 @@ def segmentation_to_mesh(segmentation, level=0.5):
 
     # Marching cubes
     verts, faces, _, _ = measure.marching_cubes(segmentation, level)
-    
+
     # Convert to torch tensors
     verts = torch.from_numpy(verts.copy()).float()
     faces = torch.from_numpy(faces.copy()).long()
-    
+
     # Create a PyTorch3D Meshes object
     mesh = Meshes(verts=[verts], faces=[faces])
 

@@ -4,6 +4,7 @@ from src.data import load_segmentation, preprocess_segmentation
 from src.mesh import segmentation_to_mesh
 from src.model import MeshRefinementModel
 from src.loss import boundary_loss
+from src.prior import gaussian_prior_loss
 from src.utils import save_mesh
 from tqdm import tqdm
 
@@ -14,11 +15,12 @@ def main():
     Note: Please run `python src/generate_sample_data.py` first to generate the sample data.
     """
     # Configuration
-    data_path = "data/sphere.nii.gz"
+    data_path = "data/sphere.zarr"
     output_dir = "output"
     label = 1
     learning_rate = 1e-3
     num_iterations = 100
+    prior_weight = 1.0
 
     if not os.path.exists(data_path):
         print(f"Data file not found at {data_path}.")
@@ -48,14 +50,15 @@ def main():
     print("Optimizing mesh...")
     for i in tqdm(range(num_iterations)):
         optimizer.zero_grad()
-        refined_mesh = model()
-        loss = boundary_loss(refined_mesh)
+        refined_mesh, gaussian_params = model()
+        prior = gaussian_prior_loss(refined_mesh, segmentation, gaussian_params)
+        loss = boundary_loss(refined_mesh) + prior_weight * prior
         loss.backward()
         optimizer.step()
 
     # Save final mesh
     print("Saving final mesh...")
-    final_mesh = model()
+    final_mesh, _ = model()
     save_mesh(final_mesh, os.path.join(output_dir, "refined_mesh.obj"))
     print(f"Refined mesh saved to {os.path.join(output_dir, 'refined_mesh.obj')}")
 

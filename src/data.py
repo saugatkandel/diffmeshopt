@@ -1,15 +1,15 @@
-import SimpleITK as sitk
-import numpy as np
+import zarr
 import torch
 
 
 def load_segmentation(path):
     """
-    Load a 3D segmentation from a file.
+    Load a 3D segmentation from an OME-Zarr store.
     Returns a torch tensor.
     """
-    image = sitk.ReadImage(path)
-    array = sitk.GetArrayFromImage(image)
+    store = zarr.open(path, mode='r')
+    # OME-Zarr writers typically store the highest resolution in a '0' key
+    array = store['0'][:]
     return torch.from_numpy(array)
 
 

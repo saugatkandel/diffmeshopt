@@ -1,6 +1,8 @@
 import numpy as np
-import SimpleITK as sitk
+import zarr
+import ome_zarr.writer
 import os
+import shutil
 
 def generate_sphere(size=64, radius=20):
     """
@@ -12,18 +14,23 @@ def generate_sphere(size=64, radius=20):
     sphere = (x - center)**2 + (y - center)**2 + (z - center)**2 < radius**2
     return sphere.astype(np.uint8)
 
-def save_nifti(array, path):
+def save_ome_zarr(array: np.ndarray, path: str):
     """
-    Save a numpy array as a NIfTI file.
+    Save a numpy array as an OME-Zarr store.
     """
-    image = sitk.GetImageFromArray(array)
-    sitk.WriteImage(image, path)
+    if os.path.exists(path):
+        shutil.rmtree(path) # zarr doesn't overwrite, so remove old store
+    store = zarr.DirectoryStore(path)
+    root_group = zarr.group(store=store, overwrite=True)
+    ome_zarr.writer.write_image(image=array, group=root_group, axes="zyx")
+
 
 if __name__ == "__main__":
     data_dir = "data"
     if not os.path.exists(data_dir):
         os.makedirs(data_dir)
-        
+    
+    file_path = os.path.join(data_dir, "sphere.zarr")
     sphere = generate_sphere()
-    save_nifti(sphere, os.path.join(data_dir, "sphere.nii.gz"))
-    print("Generated and saved sphere.nii.gz in the 'data' directory.")
+    save_ome_zarr(sphere, file_path)
+    print(f"Generated and saved {file_path}")
