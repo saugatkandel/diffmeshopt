@@ -1,0 +1,29 @@
+{
+    "name": "DiffMeshOpt Remote Attach",
+    // We remove 'build' and 'image' because RunPod already started the container.
+    // This prevents VS Code from trying to pull/build things locally.
+    "customizations": {
+        "vscode": {
+            "settings": {
+                "python.defaultInterpreterPath": "/workspace/.pixi/envs/default/bin/python",
+                "python.terminal.activateEnvInSelectedTerminal": true,
+                "editor.formatOnSave": true,
+                "[python]": {
+                    "editor.defaultFormatter": "charliermarsh.ruff"
+                }
+            },
+            "extensions": [
+                "ms-python.python",
+                "ms-python.pylance",
+                "charliermarsh.ruff",
+                "tamasfe.even-better-toml",
+                "google.gemini-vscode",
+                "ms-toolsai.jupyter",
+                "usernamehw.errorlens"
+            ]
+        }
+    },
+    // This tells VS Code where your code lives inside the RunPod container
+    "workspaceFolder": "/workspace",
+    "remoteUser": "root"
+}
