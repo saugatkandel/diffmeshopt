@@ -8,6 +8,7 @@
                 "python.defaultInterpreterPath": "/workspace/.pixi/envs/default/bin/python",
                 "python.terminal.activateEnvInSelectedTerminal": true,
                 "editor.formatOnSave": true,
+                "editor.insertSpaces": true,
                 "[python]": {
                     "editor.defaultFormatter": "charliermarsh.ruff"
                 }
@@ -23,6 +24,7 @@
             ]
         }
     },
+    "postCreateCommand": "pixi install",
     // This tells VS Code where your code lives inside the RunPod container
     "workspaceFolder": "/workspace",
     "remoteUser": "root"
