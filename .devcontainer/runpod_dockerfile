@@ -1,37 +1,36 @@
 FROM runpod/pytorch:1.0.2-cu1281-torch280-ubuntu2404
 
-ENV PYTHONUNBUFFERED=1
-ENV DEBIAN_FRONTEND=noninteractive
-ENV SHELL=/bin/bash
+ENV PYTHONUNBUFFERED=1 \
+    DEBIAN_FRONTEND=noninteractive \
+    SHELL=/bin/bash
 
 WORKDIR /workspace
 
-# 1. Update and install CUDA 12.8 + Tools
+# 1. Combined System Tools + CUDA + VS Code Server Installation
+# Combining these into one RUN reduces layers significantly.
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
-    wget curl git build-essential cuda-toolkit-12-8 && \
-    rm -rf /var/lib/apt/lists/*
+        wget curl git build-essential cuda-toolkit-12-8 && \
+    # Install code-server immediately
+    curl -fsSL https://code-server.dev/install.sh | sh && \
+    # Cleanup apt in the same layer to truly save space
+    apt-get clean && rm -rf /var/lib/apt/lists/*
 
-# 2. Install Pixi
+# 2. Install Pixi and Extensions in one go
+# We use a single layer to install Pixi and the extensions.
 RUN curl -fsSL https://pixi.sh/install.sh | bash && \
-    mv /root/.pixi/bin/pixi /usr/local/bin/pixi
-
-# 3. Pre-install the VS Code Server binary and Extensions 
-# We install them to /opt/vscode-extensions so they are baked into the image
-RUN curl -fsSL https://code-server.dev/install.sh | sh
-RUN code-server --extensions-dir /opt/vscode-extensions \
-    --install-extension ms-python.python \
-    --install-extension ms-python.pylance \
-    --install-extension charliermarsh.ruff \
-    --install-extension tamasfe.even-better-toml \
-    --install-extension google.gemini-vscode \
-    --install-extension ms-toolsai.jupyter \
-    --install-extension usernamehw.errorlens
-
+    mv /root/.pixi/bin/pixi /usr/local/bin/pixi && \
+    # Pre-install extensions to the shared directory
+    code-server --extensions-dir /opt/vscode-extensions \
+        --install-extension ms-python.python \
+        --install-extension ms-python.pylance \
+        --install-extension charliermarsh.ruff \
+        --install-extension tamasfe.even-better-toml \
+        --install-extension google.gemini-vscode \
+        --install-extension ms-toolsai.jupyter \
+        --install-extension usernamehw.errorlens && \
+    # Create the symlink for VS Code Desktop compatibility
+    mkdir -p /root/.vscode-server && \
+    ln -s /opt/vscode-extensions /root/.vscode-server/extension
 # 4. Alias for the terminal
 RUN echo 'alias code="code-server"' >> ~/.bashrc
-
-# 3. Create the destination folder and LINK the extensions
-# This ensures that when VS Code Desktop connects, it "sees" the baked-in extensions immediately
-RUN mkdir -p /root/.vscode-server && \
-    ln -s /opt/vscode-extensions /root/.vscode-server/extensions
