@@ -29,4 +29,4 @@ jobs:
           file: .devcontainer/runpod_dockerfile
           push: true
           # Replace 'yourusername' with your actual Docker Hub ID
-          tags: saugatkandel/diffmeshopt-env:latest
+          tags: saugatkandel12/diffmeshopt-env:latest
