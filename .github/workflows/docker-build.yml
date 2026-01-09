@@ -6,11 +6,24 @@ on:
   workflow_dispatch:      # Allows you to run it manually from the UI
 
 jobs:
+
   build-and-push:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout Code
         uses: actions/checkout@v4
+
+      # --- ADD THIS STEP TO FIX "NO SPACE LEFT ON DEVICE" ---
+      - name: Free Disk Space
+        uses: jlumbroso/free-disk-space@main
+        with:
+          tool-cache: true
+          android: true
+          dotnet: true
+          haskell: true
+          large-packages: true
+          docker-images: true
+          swap-storage: true
 
       - name: Login to Docker Hub
         uses: docker/login-action@v3
