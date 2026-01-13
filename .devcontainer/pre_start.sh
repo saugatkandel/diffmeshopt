@@ -7,7 +7,7 @@ extensions=(
     "ms-python.pylance"
     "charliermarsh.ruff"
     "tamasfe.even-better-toml"
-    "google.gemini-vscode"
+    "Google.geminicodeassist"
     "ms-toolsai.jupyter"
     "usernamehw.errorlens"
 )
@@ -20,13 +20,13 @@ done
 
 # --- 2. Pixi Environment Setup (postCreateCommand) ---
 # This runs the 'pixi install' you had in your config
-if [ -d "/workspace" ]; then
-    cd /workspace
+if [ -d "/workspace/diffmeshopt" ]; then
+    cd /workspace/diffmeshopt
     if [ -f "pixi.toml" ]; then
         echo "Found pixi.toml, running pixi install..."
         pixi install
     else
-        echo "No pixi.toml found in /workspace. Skipping install."
+        echo "No pixi.toml found in /workspace/diffmeshopt. Skipping install."
     fi
 fi
 
