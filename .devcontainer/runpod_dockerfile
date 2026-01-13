@@ -16,12 +16,6 @@ RUN apt-get update && \
 RUN curl -fsSL https://pixi.sh/install.sh | bash && \
     mv /root/.pixi/bin/pixi /usr/local/bin/pixi
 
-# 3. Setup VS Code directory and Alias
-# We create the folder so VS Code doesn't have to permissions-check it later
-RUN mkdir -p /root/.vscode-server/extensions && \
-    echo 'alias code="code-server"' >> ~/.bashrc
-
-
 # 4. Inject the Startup Hook
 COPY .devcontainer/pre_start.sh /pre_start.sh
 RUN chmod +x /pre_start.sh
