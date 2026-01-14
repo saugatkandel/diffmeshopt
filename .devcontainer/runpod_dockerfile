@@ -9,7 +9,6 @@ ENV PYTHONUNBUFFERED=1 \
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
         wget curl git build-essential cuda-toolkit-12-8 && \
-    curl -fsSL https://code-server.dev/install.sh | sh && \
     apt-get clean && rm -rf /var/lib/apt/lists/*
 
 # 2. Pixi (Moved to /usr/local/bin for global access)

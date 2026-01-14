@@ -1,0 +1,12 @@
+{
+    "recommendations": [
+        "ms-python.python",
+        "ms-toolsai.jupyter",
+        "charliermarsh.ruff",
+        "Google.geminicodeassist",
+        "usernamehw.errorlens",
+        "njpwerner.autodocstring",
+        "tamasfe.even-better-toml",
+        "ms-toolsai.vscode-jupyter-powertoys"
+    ]
+}

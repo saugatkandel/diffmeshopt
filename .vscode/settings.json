@@ -1,3 +1,23 @@
 {
-    "python.defaultInterpreterPath": "/workspace/diffmeshopt/.pixi/envs/default/bin/python"
+    "python.languageServer": "Pylance",
+    "python.defaultInterpreterPath": "/workspace/diffmeshopt/.pixi/envs/default/bin/python",
+    "python-env.workspaceSearchPaths": [
+        "/workspace/diffmeshopt/.pixi/envs"
+    ],
+    "python.terminal.activateEnvInCurrentTerminal": true,
+    "notebook.formatOnCellExecution": true,
+    "editor.formatOnSave": true,
+    "remote.defaultExtensionsIfInstalledLocally": [
+        "GitHub.copilot",
+        "GitHub.copilot-chat",
+        "GitHub.vscode-pull-request-github",
+        "ms-python.python",
+        "ms-toolsai.jupyter",
+        "charliermarsh.ruff",
+        "Google.geminicodeassist",
+        "usernamehw.errorlens",
+        "njpwerner.autodocstring",
+        "tamasfe.even-better-toml",
+        "ms-toolsai.vscode-jupyter-powertoys"
+    ]
 }
