@@ -48,7 +48,7 @@ select = [
     "C4", # flake8-comprehensions
     "UP", # pyupgrade
 ]
-ignore = []
+ignore = ["F401"]
 
 [tool.ruff.lint.isort]
 known-first-party = ["src"]

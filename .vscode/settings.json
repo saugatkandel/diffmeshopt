@@ -5,7 +5,6 @@
         "/workspace/diffmeshopt/.pixi/envs"
     ],
     "python.terminal.activateEnvInCurrentTerminal": true,
-    "notebook.formatOnCellExecution": true,
     "editor.formatOnSave": true,
     "remote.defaultExtensionsIfInstalledLocally": [
         "GitHub.copilot",
@@ -19,5 +18,16 @@
         "njpwerner.autodocstring",
         "tamasfe.even-better-toml",
         "ms-toolsai.vscode-jupyter-powertoys"
-    ]
+    ],
+    "notebook.formatOnCellExecution": true,
+    "[python]": {
+        "editor.codeActionsOnSave": {
+            "source.fixAll.ruff": "explicit",
+            "source.organizeImports.ruff": "explicit"
+        }
+    },
+    "notebook.codeActionsOnSave": {
+        "notebook.source.fixAll.ruff": "explicit",
+        "notebook.source.organizeImports.ruff": "explicit"
+    }
 }
