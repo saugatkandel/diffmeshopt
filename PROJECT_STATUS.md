@@ -15,8 +15,19 @@ We have implemented a 2D prototype for refining organelle segmentations using a 
 *   `src/train_2d.py`: (Pending Update) Training loop for the network.
 
 ## Current State
-1.  **Optimization Logic**: The `optimize_2d.py` module correctly implements spline smoothing, normal computation, and rectangular sampling (width=3).
-2.  **Validation**: The notebook `optimize_2d.ipynb` and script `run_2d_optimization.py` successfully run the optimization loop, showing the contour snapping to the membrane center.
+- **Core Modules Refactored**:
+    - Geometric losses (`LaplacianSmoothingLoss`, `EdgeLengthConsistencyLoss`) have been implemented and moved to `src/loss_2d.py`.
+    - The optimization loop has been encapsulated into a `ContourRefiner` class within `src/optimize_2d.py`.
+    - The `ContourRefiner` class now correctly uses stochastic sampling for the data term and computes geometric losses on the full contour.
+- **Stochastic Sampling Implemented**:
+    - A stratified random sampling strategy (`_get_stratified_indices`) has been implemented in `src/optimize_2d.py` to select mini-batches of vertices for the data loss calculation.
+    - This approach provides stable normals by calculating them on the coarser, subsampled contour.
+
+## In Progress
+- **2D Optimization Validation**:
+    - The `ContourRefiner` class is implemented but the end-to-end optimization loop has **not yet been validated**.
+    - The next step is to use a Jupyter notebook to run the `ContourRefiner` on synthetic data, visualize the results, and confirm that the contour correctly converges to the target.
+
 
 ## Next Steps (Resume Plan)
 1.  **Update Neural Model**: Modify `src/model_2d.py` to use the updated `sample_profiles` function from `src/optimize_2d.py` (or replicate the rectangular sampling logic) to ensure the NN sees the same features as the direct optimization.
@@ -27,7 +38,5 @@ We have implemented a 2D prototype for refining organelle segmentations using a 
     *   Implement 3D `grid_sample` logic (sampling prisms/cylinders along normals).
 
 ## How to Run
-```bash
-# Run the 2D optimization script
-python src/run_2d_optimization.py
+Use `notebooks/optimize_2d.ipynb`.
 ```

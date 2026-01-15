@@ -4,8 +4,12 @@ import joblib
 import matplotlib.pyplot as plt
 import numpy as np
 import torch
+import torch.nn as nn
 import torch.nn.functional as F
 from scipy.interpolate import make_splprep
+
+from src.loss_2d import (BiGaussianLoss, EdgeLengthConsistencyLoss,
+                         LaplacianSmoothingLoss)
 
 
 def compute_normals(contour):
@@ -26,13 +30,10 @@ def compute_normals(contour):
     return normals
 
 
-def sample_profiles(image, contour, normals, num_samples=21, sample_step=1.0, width=3):
+def get_sampling_grid(contour, normals, num_samples=21, sample_step=1.0, width=3):
     """
-    Sample intensity profiles from the image along the normals.
-    Averages intensity across a rectangle of specified width along the tangent.
-    image: (1, 1, H, W) tensor
-    contour: (N, 2) tensor (y, x)
-    normals: (N, 2) tensor
+    Generates the coordinates for sampling profiles.
+    Returns tensor of shape (N, num_samples, width, 2) in (y, x) pixel coordinates.
     """
     N = contour.shape[0]
     K = num_samples
@@ -41,8 +42,8 @@ def sample_profiles(image, contour, normals, num_samples=21, sample_step=1.0, wi
     # normals is (y, x)
     tangents = torch.stack([normals[:, 1], -normals[:, 0]], dim=-1)
 
-    # Offsets: [-K//2, ..., K//2]
-    offsets = torch.linspace(-(K // 2), K // 2, K, device=contour.device) * sample_step
+    # Offsets centered at 0. Using arange ensures step size is exactly sample_step.
+    offsets = (torch.arange(K, device=contour.device, dtype=torch.float32) - (K - 1) / 2) * sample_step
 
     # Tangent offsets for width averaging
     # width=3 -> [-1, 0, 1]
@@ -50,36 +51,108 @@ def sample_profiles(image, contour, normals, num_samples=21, sample_step=1.0, wi
         -(width - 1) / 2, (width - 1) / 2, width, device=contour.device
     )
 
-    # Calculate sample points: p = v + offset * n
-    # Shape: (N, K, 2)
-    sample_points = contour.unsqueeze(1) + normals.unsqueeze(1) * offsets.view(1, K, 1)
     # Calculate sample points: p = v + offset_n * n + offset_t * t
     # Shape: (N, K, W, 2)
+    # Use None indexing for cleaner broadcasting
     sample_points = (
-        contour.view(N, 1, 1, 2)
-        + normals.view(N, 1, 1, 2) * offsets.view(1, K, 1, 1)
-        + tangents.view(N, 1, 1, 2) * tangent_offsets.view(1, 1, width, 1)
+        contour[:, None, None, :]
+        + normals[:, None, None, :] * offsets[None, :, None, None]
+        + tangents[:, None, None, :] * tangent_offsets[None, None, :, None]
     )
 
+    return sample_points
+
+
+def sample_at_points(image, points):
+    """
+    Samples the image at the given points using bilinear interpolation.
+    points: (..., 2) tensor of coordinates in (y, x) format.
+    image: (B, C, H, W) tensor.
+    Returns: (...) tensor of sampled intensities.
+    """
     # Normalize coordinates to [-1, 1] for grid_sample
-    # Image shape is (H, W). grid_sample expects (x, y).
-    # Our contour is (row, col) -> (y, x).
     H, W = image.shape[-2:]
 
-    sample_points_norm = sample_points.clone()
-    # x = col = index 1, y = row = index 0
-    sample_points_norm[..., 0] = (sample_points[..., 1] / (W - 1)) * 2 - 1  # x
-    sample_points_norm[..., 1] = (sample_points[..., 0] / (H - 1)) * 2 - 1  # y
+    # points is (..., 2) -> (y, x)
+    # grid_sample expects (x, y)
 
-    # grid_sample expects (B, C, H_in, W_in) input and (B, H_out, W_out, 2) grid
-    # We reshape grid to (1, 1, N*K, 2) to sample all points at once
-    grid = sample_points_norm.view(1, 1, -1, 2)
+    # Flatten to (1, 1, num_points, 2) for grid_sample
+    original_shape = points.shape[:-1]
+    num_points = points.numel() // 2
+    flat_points = points.view(1, 1, num_points, 2)
+
+    grid_x = (flat_points[..., 1] / (W - 1)) * 2 - 1
+    grid_y = (flat_points[..., 0] / (H - 1)) * 2 - 1
+    grid = torch.stack([grid_x, grid_y], dim=-1)
 
     # Sample
     samples = F.grid_sample(image, grid, align_corners=True, padding_mode="border")
 
-    # Output is (1, 1, 1, N*K*W) -> reshape to (N, K, W) and mean over W
-    return samples.view(N, K, width).mean(dim=2)
+    return samples.view(*original_shape)
+
+
+def sample_profiles(image, contour, normals, num_samples=21, sample_step=1.0, width=3):
+    """
+    Sample intensity profiles from the image along the normals.
+
+    This function performs the core differentiable sampling. For each vertex, it
+    generates a grid of sampling points along its normal and tangent, then uses
+    bilinear interpolation (`grid_sample`) to get image intensities.
+
+    The `sample_step` is in pixel units. A value of 1.0 means we create a profile
+    where each point is 1 pixel apart in the image. Sub-pixel accuracy during
+    optimization is achieved because the vertex coordinates are continuous, and
+    `grid_sample` provides gradients with respect to these continuous coordinates.
+
+    The `width` parameter averages samples along the tangent to reduce noise and
+    make the profile more robust.
+    """
+    grid = get_sampling_grid(contour, normals, num_samples, sample_step, width)
+    samples = sample_at_points(image, grid)
+    return samples.mean(dim=-1)
+
+
+def _get_stratified_indices(num_total, batch_size, device):
+    """
+    Selects a batch of indices that are roughly evenly spaced.
+    This is a form of stratified sampling on a circular contour, similar in
+    spirit to 1D Poisson disk sampling for ensuring spread.
+    """
+    if batch_size >= num_total:
+        return torch.arange(num_total, device=device)
+
+    step = num_total / batch_size
+    
+    # Stratified sampling: one random point per bin of size 'step'
+    bin_starts = torch.arange(batch_size, device=device) * step
+    jitter = torch.rand(batch_size, device=device) * step
+    
+    indices = bin_starts + jitter
+    return (indices % num_total).long()
+
+
+def sample_profiles_stochastic(image, contour, batch_size, num_samples=21, sample_step=1.0, width=3):
+    """
+    Samples profiles for a pseudo-uniformly distributed random subset of contour vertices.
+    The subset of vertices is treated as a new, coarser contour, and normals are
+    calculated on this coarse contour for stability.
+    """
+    # 1. Select a subset of indices that are spaced out along the contour
+    sub_indices = _get_stratified_indices(contour.shape[0], batch_size, device=contour.device)
+
+    # 2. Create the coarse contour from the selected vertices
+    coarse_contour = contour[sub_indices]
+
+    # 3. Compute normals on this new, smaller, coarse contour.
+    # This provides stable normals because the baseline for the tangent is wider.
+    coarse_normals = compute_normals(coarse_contour)
+
+    # 4. Sample profiles at the locations of the coarse contour vertices using their normals
+    profiles = sample_profiles(
+        image, coarse_contour, coarse_normals, num_samples, sample_step, width
+    )
+
+    return profiles, sub_indices
 
 
 def smooth_contour(contour_np, num_points=256):
@@ -103,3 +176,58 @@ def smooth_contour(contour_np, num_points=256):
     except Exception as e:
         print(f"Warning: Spline smoothing failed ({e}). Using raw contour.")
         return contour_np
+
+
+class ContourRefiner(nn.Module):
+    def __init__(
+        self,
+        initial_contour,
+        lr=1.0,
+        w_data=1.0,
+        w_laplacian=0.1,
+        w_edge=0.1,
+    ):
+        super().__init__()
+        self.contour = nn.Parameter(torch.from_numpy(initial_contour).float())
+
+        self.w_data = w_data
+        self.w_laplacian = w_laplacian
+        self.w_edge = w_edge
+
+        # Loss Functions
+        self.data_loss_fn = BiGaussianLoss()
+        self.laplacian_loss_fn = LaplacianSmoothingLoss()
+        self.edge_loss_fn = EdgeLengthConsistencyLoss()
+
+        # Optimizer
+        self.optimizer = torch.optim.Adam([self.contour], lr=lr)
+
+    def step(self, image, batch_size):
+        self.optimizer.zero_grad()
+
+        # --- Data Loss (Stochastic) ---
+        profiles, _ = sample_profiles_stochastic(
+            image, self.contour, batch_size=batch_size
+        )
+        data_loss = self.data_loss_fn(profiles)
+
+        # --- Regularization Losses (Global) ---
+        laplacian_loss = self.laplacian_loss_fn(self.contour)
+        edge_loss = self.edge_loss_fn(self.contour)
+
+        # --- Total Loss ---
+        total_loss = (
+            self.w_data * data_loss
+            + self.w_laplacian * laplacian_loss
+            + self.w_edge * edge_loss
+        )
+
+        total_loss.backward()
+        self.optimizer.step()
+
+        return {
+            "total_loss": total_loss.item(),
+            "data_loss": data_loss.item(),
+            "laplacian_loss": laplacian_loss.item(),
+            "edge_loss": edge_loss.item(),
+        }

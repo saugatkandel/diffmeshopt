@@ -1,7 +1,9 @@
 # pixi environments
 .pixi/*
 !.pixi/config.toml
-pixi.lock
 *.zarr
 *.aln
 *.eer
+notebooks/dolphin.obj
+**/__pycache__/
+**/*.pyc
