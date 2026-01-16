@@ -22,12 +22,18 @@ We have implemented a 2D prototype for refining organelle segmentations using a 
 - **Stochastic Sampling Implemented**:
     - A stratified random sampling strategy (`_get_stratified_indices`) has been implemented in `src/optimize_2d.py` to select mini-batches of vertices for the data loss calculation.
     - This approach provides stable normals by calculating them on the coarser, subsampled contour.
+- **B-Spline Parameterization**:
+    - A `BSplineContourRefiner` class has been added to `src/optimize_2d.py` to optimize control points instead of raw vertices, enforcing smoothness by construction.
+    - **Note:** This B-spline refiner has not yet been tested.
 
 ## In Progress
 - **2D Optimization Validation**:
     - The `ContourRefiner` class is implemented but the end-to-end optimization loop has **not yet been validated**.
     - The next step is to use a Jupyter notebook to run the `ContourRefiner` on synthetic data, visualize the results, and confirm that the contour correctly converges to the target.
 
+## Pending Features & Limitations
+- **Template Optimization**: The bi-Gaussian template parameters are currently fixed. Optimization of these parameters (e.g., peak distance, sigma) during the refinement process is not yet implemented.
+- **Self-Supervised Learning**: The eventual goal of using this as a self-supervised learning signal for a neural network has not been implemented.
 
 ## Next Steps (Resume Plan)
 1.  **Update Neural Model**: Modify `src/model_2d.py` to use the updated `sample_profiles` function from `src/optimize_2d.py` (or replicate the rectangular sampling logic) to ensure the NN sees the same features as the direct optimization.
