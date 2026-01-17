@@ -2,7 +2,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from src.props_2d import TemplateProps
+from src.props_2d import OptimizationProps, TemplateProps
 
 
 class BiGaussianLoss(nn.Module):
@@ -18,12 +18,13 @@ class BiGaussianLoss(nn.Module):
             template_props = TemplateProps()
         self.peak_dist = template_props.peak_dist
         self.sigma = template_props.sigma
-        self.profile_len = template_props.profile_len
+        self.profile_len = template_props.num_samples
 
         # Create template
         # Center is 0. Range is roughly [-profile_len/2, profile_len/2]
         x = torch.arange(self.profile_len, dtype=torch.float32) - (self.profile_len - 1) / 2.0
 
+        self.register_buffer("x", x)
         template = self.get_bigaussian_profile(x, self.peak_dist, self.sigma)
         self.register_buffer("template", template)
 
@@ -46,15 +47,25 @@ class BiGaussianLoss(nn.Module):
         template = (template - t_mean) / (t_std + 1e-8)
         return template
 
-    def forward(self, profiles: torch.Tensor) -> torch.Tensor:
+    def forward(
+        self,
+        profiles: torch.Tensor,
+        peak_dist: torch.Tensor | None = None,
+        sigma: torch.Tensor | None = None,
+    ) -> torch.Tensor:
         # profiles: (N, K)
         # Normalize profiles
         mean = profiles.mean(dim=-1, keepdim=True)
         std = profiles.std(dim=-1, keepdim=True)
         profiles_norm = (profiles - mean) / (std + 1e-8)
 
+        if peak_dist is not None and sigma is not None:
+            template = self.get_bigaussian_profile(self.x, peak_dist, sigma)
+        else:
+            template = self.template
+
         # Cross correlation
-        correlation = (profiles_norm * self.template).mean(dim=-1)
+        correlation = (profiles_norm * template).mean(dim=-1)
 
         # We want to maximize correlation, so minimize 1 - correlation
         loss = 1 - correlation
@@ -127,3 +138,92 @@ class EdgeLengthConsistencyLoss(nn.Module):
 
         # Minimize variance: mean((l - mean_l)^2)
         return torch.var(edge_lengths)
+
+
+class SigmaRegularizationLoss(nn.Module):
+    def __init__(self):
+        super().__init__()
+
+    def forward(self, log_sigma: torch.Tensor, initial_log_sigma: torch.Tensor) -> torch.Tensor:
+        # Regularization: Gaussian prior on log(sigma) centered at initialization
+        return (log_sigma - initial_log_sigma) ** 2
+
+
+class TemplateShapeLoss(nn.Module):
+    def __init__(self):
+        super().__init__()
+
+    def forward(self, profiles: torch.Tensor, template: torch.Tensor) -> torch.Tensor:
+        mean_profile = profiles.mean(dim=0)
+        mp_mean = mean_profile.mean()
+        mp_std = mean_profile.std()
+        mean_profile_norm = (mean_profile - mp_mean) / (mp_std + 1e-8)
+        return F.mse_loss(mean_profile_norm, template)
+
+
+class ContourLoss(nn.Module):
+    def __init__(
+        self,
+        optimization_props: OptimizationProps,
+        template_props: TemplateProps,
+        laplacian_window_size: int = 1,
+    ):
+        super().__init__()
+        self.w_data = optimization_props.w_data
+        self.w_laplacian = optimization_props.w_laplacian
+        self.w_edge = optimization_props.w_edge
+        self.w_sigma_reg = getattr(optimization_props, "w_sigma_reg", 1.0)
+        self.w_template_shape = getattr(optimization_props, "w_template_shape", 0.1)
+
+        self.data_loss_fn = BiGaussianLoss(template_props=template_props)
+        self.laplacian_loss_fn = LaplacianSmoothingLoss(window_size=laplacian_window_size)
+        self.edge_loss_fn = EdgeLengthConsistencyLoss()
+        self.sigma_reg_fn = SigmaRegularizationLoss()
+        self.shape_loss_fn = TemplateShapeLoss()
+
+    def forward(
+        self,
+        profiles: torch.Tensor,
+        points_for_reg: torch.Tensor,
+        optimize_template: bool = False,
+        peak_dist: torch.Tensor | None = None,
+        sigma: torch.Tensor | None = None,
+        log_sigma: torch.Tensor | None = None,
+        initial_log_sigma: torch.Tensor | None = None,
+    ) -> dict[str, torch.Tensor]:
+        if optimize_template:
+            # Template is calculated once inside data_loss_fn using these scalars
+            data_loss = self.data_loss_fn(profiles, peak_dist, sigma)
+
+            # Regularization: Gaussian prior on log(sigma) centered at initialization
+            sigma_reg = self.sigma_reg_fn(log_sigma, initial_log_sigma)
+
+            # Shape Loss: Match the shape of the consensus (mean) profile to the template.
+            template = self.data_loss_fn.get_bigaussian_profile(
+                self.data_loss_fn.x, peak_dist, sigma
+            )
+            shape_loss = self.shape_loss_fn(profiles, template)
+        else:
+            data_loss = self.data_loss_fn(profiles)
+            sigma_reg = torch.tensor(0.0, device=profiles.device)
+            shape_loss = torch.tensor(0.0, device=profiles.device)
+
+        laplacian_loss = self.laplacian_loss_fn(points_for_reg)
+        edge_loss = self.edge_loss_fn(points_for_reg)
+
+        total_loss = (
+            self.w_data * data_loss
+            + self.w_laplacian * laplacian_loss
+            + self.w_edge * edge_loss
+            + self.w_sigma_reg * sigma_reg
+            + self.w_template_shape * shape_loss
+        )
+
+        return {
+            "total_loss": total_loss,
+            "data_loss": self.w_data * data_loss,
+            "laplacian_loss": self.w_laplacian * laplacian_loss,
+            "edge_loss": self.w_edge * edge_loss,
+            "sigma_reg": self.w_sigma_reg * sigma_reg,
+            "shape_loss": self.w_template_shape * shape_loss,
+        }

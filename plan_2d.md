@@ -61,7 +61,6 @@ The 2D model will mirror the proposed 3D architecture but operate on 2D tensors.
     *   Deform contour.
 3.  **Loss**: Compute Data Loss + $\lambda$ * Reg Loss.
 4.  **Backward**: Update network weights (or vertex positions directly if doing direct optimization).
-5.  **Remesh**: Every $N$ iterations, redistribute vertices to maintain uniform density.
 
 ### Step 3: Evaluation
 *   Visual check: Does the contour align with the "bilayer" signal?

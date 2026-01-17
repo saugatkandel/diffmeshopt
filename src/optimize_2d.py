@@ -1,11 +1,10 @@
-import matplotlib.pyplot as plt
 import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from scipy.interpolate import make_splprep
 
-from src.loss_2d import BiGaussianLoss, EdgeLengthConsistencyLoss, LaplacianSmoothingLoss
+from src.loss_2d import ContourLoss
 from src.props_2d import OptimizationProps, SamplingProps, TemplateProps
 
 
@@ -42,7 +41,7 @@ def get_sampling_points(
     if sampling_props is None:
         sampling_props = SamplingProps()
 
-    N = contour.shape[0]
+    # N = contour.shape[0]
     K = sampling_props.num_samples
     sample_step = sampling_props.sample_step
     width = sampling_props.width
@@ -182,7 +181,9 @@ def sample_profiles_stochastic(
     return profiles, sub_indices
 
 
-def smooth_contour(contour_np: np.ndarray, num_points: int = 256) -> np.ndarray:
+def smooth_contour(
+    contour_np: np.ndarray, num_points: int = 256, return_spline: bool = False
+) -> np.ndarray:
     """
     Smooths and resamples a contour using B-splines.
     """
@@ -192,14 +193,13 @@ def smooth_contour(contour_np: np.ndarray, num_points: int = 256) -> np.ndarray:
         else:
             contour_closed = contour_np
 
-        diffs = np.diff(contour_closed, axis=0)
-        dists = np.linalg.norm(diffs, axis=1)
-        u = np.concatenate([[0], np.cumsum(dists)])
-        u = u / u[-1]
-
         # make_splprep returns (spl, u)
-        spl, _ = make_splprep(contour_closed.T, u=u, s=len(contour_closed))
+        spl, _ = make_splprep(contour_closed.T, s=len(contour_closed))
+
         u_new = np.linspace(0, 1, num_points, endpoint=False)
+        if return_spline:
+            return spl(u_new).T.astype(np.float32), spl
+
         return spl(u_new).T.astype(np.float32)
     except Exception as e:
         print(f"Warning: Spline smoothing failed ({e}). Using raw contour.")
@@ -254,64 +254,89 @@ class ContourRefiner(nn.Module):
         template_props: TemplateProps = None,
         sampling_props: SamplingProps | None = None,
         laplacian_window_size: int = 1,
+        optimize_template: bool = False,
     ):
         super().__init__()
         self.register_buffer("image", torch.from_numpy(image).float())
         self.contour = nn.Parameter(torch.from_numpy(initial_contour).float())
 
-        self.optimization_props = optimization_props
-        if sampling_props is None:
-            sampling_props = SamplingProps()
-        self.sampling_props = sampling_props
-
         if optimization_props is None:
             optimization_props = OptimizationProps()
+
+        if sampling_props is None:
+            sampling_props = SamplingProps()
 
         if template_props is None:
             template_props = TemplateProps()
 
-        self.w_data = optimization_props.w_data
-        self.w_laplacian = optimization_props.w_laplacian
-        self.w_edge = optimization_props.w_edge
+        self.optimization_props = optimization_props
+        self.sampling_props = sampling_props
+        self.template_props = template_props
 
-        # Loss Functions
-        self.data_loss_fn = BiGaussianLoss(template_props=template_props)
-        self.laplacian_loss_fn = LaplacianSmoothingLoss(window_size=laplacian_window_size)
-        self.edge_loss_fn = EdgeLengthConsistencyLoss()
+        self.loss_fn = ContourLoss(
+            optimization_props=self.optimization_props,
+            template_props=self.template_props,
+            laplacian_window_size=laplacian_window_size,
+        )
 
         # Optimizer
-        lr = optimization_props.lr
+        lr = self.optimization_props.lr
         self.optimizer = torch.optim.Adam([self.contour], lr=lr)
+        self.optimize_template = optimize_template
+        if optimize_template:
+            # Use log trick to ensure positive parameters
+            self.log_peak_dist = nn.Parameter(
+                torch.log(torch.tensor(float(self.template_props.peak_dist)))
+            )
+            self.log_sigma = nn.Parameter(
+                torch.log(torch.tensor(float(self.template_props.sigma)))
+            )
+            # Store initial log sigma for regularization (Gaussian prior)
+            self.register_buffer("initial_log_sigma", self.log_sigma.detach().clone())
+            self.optimizer = torch.optim.Adam(
+                [self.contour, self.log_peak_dist, self.log_sigma], lr=lr
+            )
+        else:
+            self.optimizer = torch.optim.Adam([self.contour], lr=lr)
 
-    def step(self) -> dict[str, float]:
-        self.optimizer.zero_grad()
-
+    def _forward_propagate(self):
         # --- Data Loss (Stochastic) ---
         profiles, _ = sample_profiles_stochastic(
             self.image,
             self.contour,
             sampling_props=self.sampling_props,
         )
-        data_loss = self.data_loss_fn(profiles)
 
-        # --- Regularization Losses (Global) ---
-        laplacian_loss = self.laplacian_loss_fn(self.contour)
-        edge_loss = self.edge_loss_fn(self.contour)
+        peak_dist = None
+        sigma = None
+        log_sigma = None
+        initial_log_sigma = None
 
-        # --- Total Loss ---
-        total_loss = (
-            self.w_data * data_loss + self.w_laplacian * laplacian_loss + self.w_edge * edge_loss
+        if self.optimize_template:
+            peak_dist = torch.exp(self.log_peak_dist)
+            sigma = torch.exp(self.log_sigma)
+            log_sigma = self.log_sigma
+            initial_log_sigma = self.initial_log_sigma
+
+        losses = self.loss_fn(
+            profiles,
+            self.contour,
+            optimize_template=self.optimize_template,
+            peak_dist=peak_dist,
+            sigma=sigma,
+            log_sigma=log_sigma,
+            initial_log_sigma=initial_log_sigma,
         )
 
-        total_loss.backward()
-        self.optimizer.step()
+        losses["total_loss"].backward()
+        return losses
 
-        return {
-            "total_loss": total_loss.item(),
-            "data_loss": data_loss.item(),
-            "laplacian_loss": laplacian_loss.item(),
-            "edge_loss": edge_loss.item(),
-        }
+    def step(self) -> dict[str, float]:
+        self.optimizer.zero_grad()
+
+        losses = self._forward_propagate()
+        self.optimizer.step()
+        return {k: v.item() for k, v in losses.items()}
 
     def update_contour(self, contour_np: np.ndarray) -> None:
         """
@@ -333,6 +358,8 @@ class BSplineContourRefiner(nn.Module):
         sampling_props: SamplingProps | None = None,
         num_control_points: int = 40,
         num_eval_points: int = 200,
+        laplacian_window_size: int = 1,
+        optimize_template: bool = False,
     ):
         super().__init__()
         self.register_buffer("image", torch.from_numpy(image).float())
@@ -351,62 +378,84 @@ class BSplineContourRefiner(nn.Module):
         # 2. Precompute evaluation matrix for the desired resolution
         self.register_buffer("M_eval", get_bspline_matrix(num_control_points, num_eval_points))
 
-        self.optimization_props = optimization_props
-        if sampling_props is None:
-            sampling_props = SamplingProps()
-        self.sampling_props = sampling_props
-
         if optimization_props is None:
             optimization_props = OptimizationProps()
+
+        if sampling_props is None:
+            sampling_props = SamplingProps()
 
         if template_props is None:
             template_props = TemplateProps()
 
-        self.w_data = optimization_props.w_data
-        self.w_laplacian = optimization_props.w_laplacian
-        self.w_edge = optimization_props.w_edge
+        self.optimization_props = optimization_props
+        self.sampling_props = sampling_props
+        self.template_props = template_props
 
-        # Loss Functions
-        self.data_loss_fn = BiGaussianLoss(template_props=template_props)
-        # We apply regularization to control points to keep them well-distributed
-        self.laplacian_loss_fn = LaplacianSmoothingLoss(window_size=1)
-        self.edge_loss_fn = EdgeLengthConsistencyLoss()
+        self.loss_fn = ContourLoss(
+            optimization_props=self.optimization_props,
+            template_props=self.template_props,
+            laplacian_window_size=laplacian_window_size,
+        )
 
         # Optimizer
-        lr = optimization_props.lr
+        lr = self.optimization_props.lr
         self.optimizer = torch.optim.Adam([self.control_points], lr=lr)
+        self.optimize_template = optimize_template
+        if optimize_template:
+            # Use log trick to ensure positive parameters
+            self.log_peak_dist = nn.Parameter(
+                torch.log(torch.tensor(float(self.template_props.peak_dist)))
+            )
+            self.log_sigma = nn.Parameter(
+                torch.log(torch.tensor(float(self.template_props.sigma)))
+            )
+            # Store initial log sigma for regularization (Gaussian prior)
+            self.register_buffer("initial_log_sigma", self.log_sigma.detach().clone())
+            self.optimizer = torch.optim.Adam(
+                [self.control_points, self.log_peak_dist, self.log_sigma], lr=lr
+            )
+        else:
+            self.optimizer = torch.optim.Adam([self.control_points], lr=lr)
 
     @property
     def contour(self):
         # Generate dense contour from control points
         return self.M_eval @ self.control_points
 
-    def step(self) -> dict[str, float]:
-        self.optimizer.zero_grad()
-
+    def _forward_propagate(self):
         # --- Data Loss (Sampled from dense spline) ---
         # We sample from the generated smooth contour
         profiles, _ = sample_profiles_stochastic(
             self.image, self.contour, sampling_props=self.sampling_props
         )
-        data_loss = self.data_loss_fn(profiles)
 
-        # --- Regularization (On Control Points) ---
-        # Keep control points regular to ensure uniform parameterization
-        laplacian_loss = self.laplacian_loss_fn(self.control_points)
-        edge_loss = self.edge_loss_fn(self.control_points)
+        peak_dist = None
+        sigma = None
+        log_sigma = None
+        initial_log_sigma = None
 
-        # --- Total Loss ---
-        total_loss = (
-            self.w_data * data_loss + self.w_laplacian * laplacian_loss + self.w_edge * edge_loss
+        if self.optimize_template:
+            peak_dist = torch.exp(self.log_peak_dist)
+            sigma = torch.exp(self.log_sigma)
+            log_sigma = self.log_sigma
+            initial_log_sigma = self.initial_log_sigma
+
+        losses = self.loss_fn(
+            profiles,
+            self.control_points,
+            optimize_template=self.optimize_template,
+            peak_dist=peak_dist,
+            sigma=sigma,
+            log_sigma=log_sigma,
+            initial_log_sigma=initial_log_sigma,
         )
 
-        total_loss.backward()
+        losses["total_loss"].backward()
+        return losses
+
+    def step(self) -> dict[str, float]:
+        self.optimizer.zero_grad()
+        losses = self._forward_propagate()
         self.optimizer.step()
 
-        return {
-            "total_loss": total_loss.item(),
-            "data_loss": data_loss.item(),
-            "laplacian_loss": laplacian_loss.item(),
-            "edge_loss": edge_loss.item(),
-        }
+        return {k: v.item() for k, v in losses.items()}

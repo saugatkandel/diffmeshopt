@@ -25,6 +25,12 @@ We have implemented a 2D prototype for refining organelle segmentations using a 
 - **B-Spline Parameterization**:
     - A `BSplineContourRefiner` class has been added to `src/optimize_2d.py` to optimize control points instead of raw vertices, enforcing smoothness by construction.
     - **Note:** This B-spline refiner has not yet been tested.
+- **Bug Fixes**:
+    - Fixed `make_splprep` usage in `src/optimize_2d.py` (it returns a (BSpline, u) tuple).
+
+## Design Decisions
+- **No Explicit Remeshing**: We avoid remeshing during the optimization loop to maintain differentiability. Instead, we rely on `EdgeLengthConsistencyLoss` and `LaplacianSmoothingLoss` to maintain mesh quality.
+- **B-Spline Regularization**: For the B-spline refiner, we apply Laplacian and Edge Length regularization to the **control points** to ensure a uniform parameterization and prevent control point bunching, even though the spline curve itself is inherently smooth.
 
 ## In Progress
 - **2D Optimization Validation**:
