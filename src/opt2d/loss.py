@@ -2,7 +2,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from src.props_2d import OptimizationProps, TemplateProps
+from src.opt2d.props import OptimizationProps, TemplateProps
 
 
 class BiGaussianLoss(nn.Module):
@@ -140,15 +140,6 @@ class EdgeLengthConsistencyLoss(nn.Module):
         return torch.var(edge_lengths)
 
 
-class SigmaRegularizationLoss(nn.Module):
-    def __init__(self):
-        super().__init__()
-
-    def forward(self, log_sigma: torch.Tensor, initial_log_sigma: torch.Tensor) -> torch.Tensor:
-        # Regularization: Gaussian prior on log(sigma) centered at initialization
-        return (log_sigma - initial_log_sigma) ** 2
-
-
 class TemplateShapeLoss(nn.Module):
     def __init__(self):
         super().__init__()
@@ -178,35 +169,27 @@ class ContourLoss(nn.Module):
         self.data_loss_fn = BiGaussianLoss(template_props=template_props)
         self.laplacian_loss_fn = LaplacianSmoothingLoss(window_size=laplacian_window_size)
         self.edge_loss_fn = EdgeLengthConsistencyLoss()
-        self.sigma_reg_fn = SigmaRegularizationLoss()
         self.shape_loss_fn = TemplateShapeLoss()
 
     def forward(
         self,
         profiles: torch.Tensor,
         points_for_reg: torch.Tensor,
-        optimize_template: bool = False,
         peak_dist: torch.Tensor | None = None,
         sigma: torch.Tensor | None = None,
-        log_sigma: torch.Tensor | None = None,
-        initial_log_sigma: torch.Tensor | None = None,
     ) -> dict[str, torch.Tensor]:
-        if optimize_template:
-            # Template is calculated once inside data_loss_fn using these scalars
-            data_loss = self.data_loss_fn(profiles, peak_dist, sigma)
+        # Data Loss: Cross-correlation with template
+        # If peak_dist/sigma are provided (from TemplateModel), they are used.
+        data_loss = self.data_loss_fn(profiles, peak_dist, sigma)
 
-            # Regularization: Gaussian prior on log(sigma) centered at initialization
-            sigma_reg = self.sigma_reg_fn(log_sigma, initial_log_sigma)
-
+        shape_loss = torch.tensor(0.0, device=profiles.device)
+        if peak_dist is not None and sigma is not None:
             # Shape Loss: Match the shape of the consensus (mean) profile to the template.
+            # This acts as a constraint to keep dynamic templates grounded to the data mean.
             template = self.data_loss_fn.get_bigaussian_profile(
                 self.data_loss_fn.x, peak_dist, sigma
             )
             shape_loss = self.shape_loss_fn(profiles, template)
-        else:
-            data_loss = self.data_loss_fn(profiles)
-            sigma_reg = torch.tensor(0.0, device=profiles.device)
-            shape_loss = torch.tensor(0.0, device=profiles.device)
 
         laplacian_loss = self.laplacian_loss_fn(points_for_reg)
         edge_loss = self.edge_loss_fn(points_for_reg)
@@ -215,7 +198,6 @@ class ContourLoss(nn.Module):
             self.w_data * data_loss
             + self.w_laplacian * laplacian_loss
             + self.w_edge * edge_loss
-            + self.w_sigma_reg * sigma_reg
             + self.w_template_shape * shape_loss
         )
 
@@ -224,6 +206,5 @@ class ContourLoss(nn.Module):
             "data_loss": self.w_data * data_loss,
             "laplacian_loss": self.w_laplacian * laplacian_loss,
             "edge_loss": self.w_edge * edge_loss,
-            "sigma_reg": self.w_sigma_reg * sigma_reg,
             "shape_loss": self.w_template_shape * shape_loss,
         }

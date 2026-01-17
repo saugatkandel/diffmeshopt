@@ -3,9 +3,9 @@ import numpy as np
 import torch
 from matplotlib.axes import Axes
 
-import src.optimize_2d as opt2d
-from src.loss_2d import BiGaussianLoss
-from src.props_2d import SamplingProps, TemplateProps
+import src.opt2d.optimize as opt2d
+from src.opt2d.loss import BiGaussianLoss
+from src.opt2d.props import SamplingProps, TemplateProps
 
 
 def plot_prior_and_landscape_from_contour(
