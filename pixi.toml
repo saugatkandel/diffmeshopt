@@ -41,3 +41,4 @@ ipykernel = ">=7.1.0, <8"
 joblib = ">=1.5.3, <2"
 click = ">=8.3.1, <9"
 pydantic = ">=2.12.5, <3"
+diffmeshopt = { path = ".", editable = true }

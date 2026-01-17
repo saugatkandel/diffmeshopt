@@ -1,6 +1,7 @@
 import torch
 from pytorch3d.loss import mesh_laplacian_smoothing
 
+
 def boundary_loss(mesh):
     """
     A loss function to refine the boundaries of the mesh.

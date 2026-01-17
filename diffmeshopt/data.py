@@ -1,5 +1,5 @@
-import zarr
 import torch
+import zarr
 
 
 def load_segmentation(path):
@@ -7,9 +7,9 @@ def load_segmentation(path):
     Load a 3D segmentation from an OME-Zarr store.
     Returns a torch tensor.
     """
-    store = zarr.open(path, mode='r')
+    store = zarr.open(path, mode="r")
     # OME-Zarr writers typically store the highest resolution in a '0' key
-    array = store['0'][:]
+    array = store["0"][:]
     return torch.from_numpy(array)
 
 

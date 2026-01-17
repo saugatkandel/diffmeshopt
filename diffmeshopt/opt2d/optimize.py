@@ -2,11 +2,11 @@ import numpy as np
 import torch
 import torch.nn as nn
 
-from src.opt2d.geometry import get_bspline_matrix
-from src.opt2d.loss import ContourLoss
-from src.opt2d.props import OptimizationProps, SamplingProps, TemplateProps
-from src.opt2d.sampling import sample_profiles_stochastic
-from src.opt2d.template import FixedTemplateModel, PerPointTemplateModel
+from diffmeshopt.opt2d.geometry import get_bspline_matrix
+from diffmeshopt.opt2d.loss import ContourLoss
+from diffmeshopt.opt2d.props import OptimizationProps, SamplingProps, TemplateProps
+from diffmeshopt.opt2d.sampling import sample_profiles_stochastic
+from diffmeshopt.opt2d.template import FixedTemplateModel, PerPointTemplateModel
 
 
 class ContourRefinerBase(nn.Module):

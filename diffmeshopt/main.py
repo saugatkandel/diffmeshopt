@@ -1,17 +1,20 @@
-import torch
 import os
-from src.data import load_segmentation, preprocess_segmentation
-from src.mesh import segmentation_to_mesh
-from src.model import MeshRefinementModel
-from src.loss import boundary_loss
-from src.prior import gaussian_prior_loss
-from src.utils import save_mesh
+
+import torch
 from tqdm import tqdm
+
+from diffmeshopt.data import load_segmentation, preprocess_segmentation
+from diffmeshopt.loss import boundary_loss
+from diffmeshopt.mesh import segmentation_to_mesh
+from diffmeshopt.model import MeshRefinementModel
+from diffmeshopt.prior import gaussian_prior_loss
+from diffmeshopt.utils import save_mesh
+
 
 def main():
     """
     Main function to run the mesh refinement pipeline.
-    
+
     Note: Please run `python src/generate_sample_data.py` first to generate the sample data.
     """
     # Configuration
@@ -40,7 +43,7 @@ def main():
     print("Converting segmentation to mesh...")
     verts, faces, initial_mesh = segmentation_to_mesh(binary_mask)
     save_mesh(initial_mesh, os.path.join(output_dir, "initial_mesh.obj"))
-    
+
     # Create model and optimizer
     print("Creating model and optimizer...")
     model = MeshRefinementModel(verts, faces)
@@ -61,6 +64,7 @@ def main():
     final_mesh, _ = model()
     save_mesh(final_mesh, os.path.join(output_dir, "refined_mesh.obj"))
     print(f"Refined mesh saved to {os.path.join(output_dir, 'refined_mesh.obj')}")
+
 
 if __name__ == "__main__":
     main()

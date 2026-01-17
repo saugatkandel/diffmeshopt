@@ -1,8 +1,8 @@
 import torch
 import torch.nn.functional as F
 
-from src.opt2d.geometry import compute_normals
-from src.opt2d.props import SamplingProps
+from diffmeshopt.opt2d.geometry import compute_normals
+from diffmeshopt.opt2d.props import SamplingProps
 
 
 def get_sampling_points(

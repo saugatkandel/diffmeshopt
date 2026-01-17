@@ -16,23 +16,24 @@ classifiers = [
     "Operating System :: OS Independent",
 ]
 dependencies = [
-    "torch",
-    "pytorch3d",
-    "numpy",
-    "trimesh",
-    "matplotlib",
-    "jupyter",
-    "notebook",
-    "scikit-image",
-    "tqdm",
-    "pytest",
-    "zarr",
-    "ome-zarr",
+    "torch",                                                             # Core tensor library
+    "torchvision",                                                       # Computer vision models and transforms
+    "pytorch3d @ git+https://github.com/facebookresearch/pytorch3d.git", # 3D geometry
+    "numpy",                                                             # Numerical operations
+    "scipy",                                                             # Scientific computing, used for splines
+    "trimesh",                                                           # Mesh loading and processing
+    "scikit-image",                                                      # Image processing algorithms
+    "opencv-python",                                                     # Image processing utilities
+    "zarr",                                                              # Chunked array storage
+    "ome-zarr",                                                          # Bio-imaging specific zarr format
+    "tqdm",                                                              # Progress bars
+    "click",                                                             # For creating command-line interfaces
+    "pydantic",                                                          # Data validation and settings management
 ]
 
-#[project.urls]
-#"Homepage" = "https://github.com/pypa/sampleproject"
-#"Bug Tracker" = "https://github.com/pypa/sampleproject/issues"
+[project.optional-dependencies]
+test = ["pytest"]
+notebook = ["jupyterlab", "ipywidgets", "ipykernel", "matplotlib", "plotly"]
 
 [tool.ruff]
 line-length = 99
@@ -51,4 +52,11 @@ select = [
 ignore = ["F401"]
 
 [tool.ruff.lint.isort]
-known-first-party = ["src"]
+known-first-party = ["diffmeshopt"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["diffmeshopt"]
+
+[tool.hatch.metadata]
+# Allow direct references (e.g., git URLs) in project.dependencies
+allow-direct-references = true

@@ -2,7 +2,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from src.opt2d.props import OptimizationProps, TemplateProps
+from diffmeshopt.opt2d.props import OptimizationProps, TemplateProps
 
 
 class BiGaussianLoss(nn.Module):
@@ -29,10 +29,18 @@ class BiGaussianLoss(nn.Module):
         self.register_buffer("template", template)
 
     @staticmethod
-    def get_bigaussian_profile(x: torch.Tensor, peak_dist: float, sigma: float) -> torch.Tensor:
+    def get_bigaussian_profile(
+        x: torch.Tensor, peak_dist: float | torch.Tensor, sigma: float | torch.Tensor
+    ) -> torch.Tensor:
         """
         Generates the raw BiGaussian intensity profile.
         """
+        # Handle broadcasting for batch optimization
+        if isinstance(peak_dist, torch.Tensor) and peak_dist.ndim == 1:
+            peak_dist = peak_dist.unsqueeze(-1)
+        if isinstance(sigma, torch.Tensor) and sigma.ndim == 1:
+            sigma = sigma.unsqueeze(-1)
+
         # Peaks at +/- peak_dist / 2
         mu1 = -peak_dist / 2
         mu2 = peak_dist / 2
@@ -42,8 +50,8 @@ class BiGaussianLoss(nn.Module):
         )
 
         # Normalize template so that correlation is 1.0 for perfect match
-        t_mean = template.mean()
-        t_std = template.std()
+        t_mean = template.mean(dim=-1, keepdim=True)
+        t_std = template.std(dim=-1, keepdim=True)
         template = (template - t_mean) / (t_std + 1e-8)
         return template
 

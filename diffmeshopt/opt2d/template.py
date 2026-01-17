@@ -1,7 +1,7 @@
 import torch
 import torch.nn as nn
 
-from src.opt2d.props import TemplateProps
+from diffmeshopt.opt2d.props import TemplateProps
 
 
 class TemplateModel(nn.Module):
