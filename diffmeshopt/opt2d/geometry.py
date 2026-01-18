@@ -87,3 +87,42 @@ def get_bspline_matrix(
     M[rows, idx_3] += b3
 
     return M
+
+
+def get_bspline_derivative_matrix(num_control_points: int, num_eval_points: int) -> torch.Tensor:
+    """
+    Constructs the matrix M such that M @ control_points = tangents.
+    Assumes uniform cubic B-splines and closed loop.
+    """
+    # u runs from 0 to num_control_points
+    u = torch.linspace(0, num_control_points, num_eval_points + 1)[:-1]
+
+    i = torch.floor(u).long()
+    t = u - i
+
+    # Derivatives of cubic B-spline basis functions
+    # b0 = (1-t)^3/6 -> b0' = -0.5 * (1-t)^2
+    db0 = -0.5 * (1 - t) ** 2
+    # b1 = (3t^3 - 6t^2 + 4)/6 -> b1' = 0.5 * (3t^2 - 4t)
+    db1 = 0.5 * (3 * t**2 - 4 * t)
+    # b2 = (-3t^3 + 3t^2 + 3t + 1)/6 -> b2' = 0.5 * (-3t^2 + 2t + 1)
+    db2 = 0.5 * (-3 * t**2 + 2 * t + 1)
+    # b3 = t^3/6 -> b3' = 0.5 * t^2
+    db3 = 0.5 * t**2
+
+    M_deriv = torch.zeros((num_eval_points, num_control_points))
+
+    # Indices of the 4 control points (wrapped)
+    idx_0 = (i - 1) % num_control_points
+    idx_1 = i % num_control_points
+    idx_2 = (i + 1) % num_control_points
+    idx_3 = (i + 2) % num_control_points
+
+    rows = torch.arange(num_eval_points)
+
+    M_deriv[rows, idx_0] += db0
+    M_deriv[rows, idx_1] += db1
+    M_deriv[rows, idx_2] += db2
+    M_deriv[rows, idx_3] += db3
+
+    return M_deriv

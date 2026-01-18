@@ -1,76 +1,43 @@
-## Test repository created using Gemini code. Not working.
+# Differentiable Mesh Optimization (2D Prototype) - VIBE CODING PROJECT>
 
-# Differentiable Mesh Optimization for 3D Segmentation Refinement
+This project implements a differentiable optimization framework for refining 2D segmentation contours using a bi-Gaussian intensity prior. It is a prototype for a future 3D mesh refinement tool for cryo-ET segmentation.
 
-This project is a proof-of-concept for refining 3D segmentation boundaries using a self-supervised learning framework with differentiable surface meshes.
+Note that this is $90%$ vibe-coded, with my providing high-level instructions.
 
 ## Project Structure
 
-```
-.
-├── data/
-│   └── .gitignore
-├── output/
-│   └── .gitignore
-├── src/
-│   ├── data.py
-│   ├── generate_sample_data.py
-│   ├── loss.py
-│   ├── main.py
-│   ├── mesh.py
-│   ├── model.py
-│   └── utils.py
-├── tests/
-│   ├── __init__.py
-│   └── test_data.py
-├── pixi.toml
-└── README.md
-```
+The core logic is located in `diffmeshopt/opt2d/`.
 
-- `src/`: Contains the core Python source code.
-- `data/`: To store input data (e.g., NIfTI files).
-- `output/`: To store the output meshes.
-- `tests/`: Contains unit tests.
-- `pixi.toml`: Project configuration and dependencies for the Pixi package manager.
+*   `diffmeshopt/opt2d/optimize.py`: Contains the `ContourRefiner` and `BSplineContourRefiner` classes that drive the optimization.
+*   `diffmeshopt/opt2d/loss.py`: Implements the `BiGaussianLoss` (data term) and geometric regularizers (`LaplacianSmoothingLoss`, `EdgeLengthConsistencyLoss`).
+*   `diffmeshopt/opt2d/template.py`: Defines various parameterizations for the membrane intensity profile (Fixed, Global, Per-Point, B-Spline, Neural Field).
+*   `diffmeshopt/opt2d/sampling.py`: Handles differentiable image sampling along contour normals.
+*   `diffmeshopt/opt2d/generate_2d_data.py`: Scripts to generate synthetic data or load real cryo-ET slices.
+*   `diffmeshopt/opt2d/vis.py`: Visualization utilities.
 
 ## Setup and Installation
 
-This project uses [Pixi](https://pixi.sh/) to manage dependencies.
+This project uses `pixi` for dependency management.
 
-1.  **Install Pixi:**
-    Follow the instructions on the [official website](https://pixi.sh/docs/latest/installation).
-
-2.  **Install Dependencies:**
-    Once Pixi is installed, open a terminal in the project root and run:
-    ```bash
-    pixi install
-    ```
-    This will create a virtual environment and install all the necessary libraries specified in the `pixi.toml` file.
+```bash
+pixi install
+```
 
 ## Usage
 
-1.  **Generate Sample Data:**
-    Before running the main application, you need to generate a sample 3D segmentation. Run the following command from the project root:
+1.  **Generate Data**:
     ```bash
-    pixi run python src/generate_sample_data.py
+    python diffmeshopt/opt2d/generate_2d_data.py
     ```
-    This will create a `sphere.nii.gz` file in the `data/` directory.
+    This creates `data/2d_training_data.pkl`.
 
-2.  **Run the Refinement:**
-    To run the mesh refinement pipeline, execute the main script:
-    ```bash
-    pixi run start
-    ```
-    This command is a shortcut for `pixi run python src/main.py`. The script will:
-    - Load the segmentation from `data/sphere.nii.gz`.
-    - Create an initial mesh and save it as `output/initial_mesh.obj`.
-    - Refine the mesh using a self-supervised optimization loop.
-    - Save the final refined mesh as `output/refined_mesh.obj`.
+2.  **Run Optimization**:
+    See `notebooks/optimize_2d.ipynb` for an interactive example of loading data, configuring the refiner, and visualizing the optimization process.
 
 ## Running Tests
 
 To run the unit tests, use the following command:
 ```bash
-pixi run test
+pytest tests/opt2d/
 ```
 This will execute the tests in the `tests/` directory using `pytest`.

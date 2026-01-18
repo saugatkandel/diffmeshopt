@@ -7,9 +7,8 @@ channels = ["conda-forge"]
 platforms = ["linux-64"]
 
 [tasks]
-start = "python src/main.py"
-test = "pytest"
-lab = "jupyter lab"
+generate-data = "python diffmeshopt/opt2d/generate_2d_data.py"
+pytest = "pytest tests/opt2d"
 
 [dependencies]
 python = "3.12.*"
@@ -27,7 +26,6 @@ jupyterlab = ">=4.5.1, <5"
 scikit-image = ">=0.26.0, <0.27"
 tqdm = ">=4.67.1, <5"
 torchvision = ">=0.24.1, <0.25"
-pytorch3d = { git = "https://github.com/facebookresearch/pytorch3d.git" }
 ipywidgets = ">=8.1.8, <9"
 jupyter = ">=1.1.1, <2"
 zarr = ">=3.1.5, <4"
@@ -42,3 +40,14 @@ joblib = ">=1.5.3, <2"
 click = ">=8.3.1, <9"
 pydantic = ">=2.12.5, <3"
 diffmeshopt = { path = ".", editable = true }
+
+# --- Optional Dependencies ---
+
+[feature.pytorch3d.pypi-dependencies]
+pytorch3d = { git = "https://github.com/facebookresearch/pytorch3d.git" }
+
+[environments]
+# The default environment will NOT include pytorch3d
+default = []
+# The 'full' environment will include all base dependencies plus pytorch3d
+full = ["pytorch3d"]

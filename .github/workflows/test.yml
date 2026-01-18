@@ -25,9 +25,8 @@ jobs:
         pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
         
         # Install the project dependencies (including test extras)
-        # Note: Installing pytorch3d from source can take a few minutes
         pip install ".[test]"
 
     - name: Run tests
       run: |
-        pytest
+        pytest tests/opt2d

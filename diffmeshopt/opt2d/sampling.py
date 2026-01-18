@@ -87,7 +87,7 @@ def sample_profiles(
     contour: torch.Tensor,
     normals: torch.Tensor,
     sampling_props: SamplingProps | None = None,
-) -> torch.Tensor:
+) -> tuple[torch.Tensor, torch.Tensor]:
     """
     Sample intensity profiles from the image along the normals.
     """
@@ -96,7 +96,18 @@ def sample_profiles(
 
     points = get_sampling_points(contour, normals, sampling_props)
     samples = sample_at_points(image, points)
-    return samples
+
+    # Calculate validity mask
+    # points: (N, K, width, 2) in (y, x) pixel coordinates
+    H, W = image.shape[-2:]
+    y = points[..., 0]
+    x = points[..., 1]
+
+    # Profile is valid only if all sample points are strictly within image bounds
+    valid_mask = (y >= 0) & (y <= H - 1) & (x >= 0) & (x <= W - 1)
+    valid_mask = valid_mask.all(dim=-1).all(dim=-1)  # (N,)
+
+    return samples, valid_mask
 
 
 def _get_stratified_indices(
@@ -123,7 +134,8 @@ def sample_profiles_stochastic(
     contour: torch.Tensor,
     sampling_props: SamplingProps | None = None,
     batch_size: int | None = None,
-) -> tuple[torch.Tensor, torch.Tensor]:
+    normals: torch.Tensor | None = None,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     """
     Samples profiles for a pseudo-uniformly distributed random subset of contour vertices.
     """
@@ -139,9 +151,12 @@ def sample_profiles_stochastic(
     coarse_contour = contour[sub_indices]
 
     # 3. Compute normals on this new, smaller, coarse contour.
-    coarse_normals = compute_normals(coarse_contour)
+    if normals is not None:
+        coarse_normals = normals[sub_indices]
+    else:
+        coarse_normals = compute_normals(coarse_contour)
 
     # 4. Sample profiles at the locations of the coarse contour vertices using their normals
-    profiles = sample_profiles(image, coarse_contour, coarse_normals, sampling_props)
+    profiles, valid_mask = sample_profiles(image, coarse_contour, coarse_normals, sampling_props)
 
-    return profiles, sub_indices
+    return profiles, sub_indices, valid_mask

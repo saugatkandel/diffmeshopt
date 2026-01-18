@@ -4,6 +4,7 @@ import torch
 from matplotlib.axes import Axes
 
 import diffmeshopt.opt2d.optimize as opt2d
+from diffmeshopt.opt2d.geometry import get_bspline_matrix
 from diffmeshopt.opt2d.loss import BiGaussianLoss
 from diffmeshopt.opt2d.props import SamplingProps, TemplateProps
 
@@ -20,7 +21,7 @@ def plot_prior_and_landscape_from_contour(
     if sampling_props is None:
         sampling_props = SamplingProps()
 
-    sample_profiles, _ = opt2d.sample_profiles_stochastic(
+    sample_profiles, _, _ = opt2d.sample_profiles_stochastic(
         torch.from_numpy(image).float(),
         torch.from_numpy(contour).float(),
         sampling_props=sampling_props,
@@ -258,4 +259,96 @@ def plot_contour_normals(
     ax.legend()
 
     if show_plot:
+        plt.show()
+
+
+def plot_bspline_basis(
+    num_cp: int = 8,
+    num_eval: int = 200,
+    ax: Axes | None = None,
+) -> None:
+    """
+    Visualizes the B-Spline basis functions (columns of M) to show overlap.
+    """
+    if ax is None:
+        fig, ax = plt.subplots(figsize=(12, 5))
+        show_plot = True
+    else:
+        show_plot = False
+
+    # Get the matrix
+    M = get_bspline_matrix(num_cp, num_eval).cpu().numpy()
+    x = np.arange(num_eval)
+
+    # Plot each basis function
+    for i in range(num_cp):
+        ax.plot(x, M[:, i], linewidth=2, label=f"CP {i}")
+        ax.fill_between(x, 0, M[:, i], alpha=0.1)
+
+    ax.set_title(f"Cubic B-Spline Basis Functions (Cyclic, N_CP={num_cp})")
+    ax.set_xlabel("Evaluation Point Index")
+    ax.set_ylabel("Influence Weight")
+    ax.grid(True, linestyle="--", alpha=0.5)
+
+    if show_plot:
+        plt.tight_layout()
+        plt.show()
+
+
+def compare_bspline_basis_functions(
+    configs: list[int] | None = None,
+    num_eval: int = 200,
+) -> None:
+    """
+    Plots B-Spline basis functions for different numbers of control points.
+    """
+    if configs is None:
+        configs = [5, 20]
+
+    fig, axes = plt.subplots(len(configs), 1, figsize=(10, 4 * len(configs)), sharex=True)
+    if len(configs) == 1:
+        axes = [axes]
+
+    for ax, num_cp in zip(axes, configs):
+        plot_bspline_basis(num_cp, num_eval, ax=ax)
+
+    plt.tight_layout()
+    plt.show()
+
+
+def plot_parameter_curves(
+    params: dict[str, torch.Tensor],
+    ax: Axes | None = None,
+) -> None:
+    """
+    Plots the unrolled parameter values along the contour.
+    params: Dictionary of tensors (e.g. from template_model.get_params())
+    """
+    if ax is None:
+        fig, ax = plt.subplots(figsize=(12, 5))
+        show_plot = True
+    else:
+        show_plot = False
+
+    x = None
+    for name, tensor in params.items():
+        # Ensure 1D
+        if tensor.ndim == 0:
+            continue
+
+        y = tensor.detach().cpu().numpy()
+        if x is None:
+            x = np.arange(len(y))
+
+        ax.plot(x, y, label=name, linewidth=2)
+
+    if x is not None:
+        ax.set_title("Spatially Varying Template Parameters")
+        ax.set_xlabel("Contour Vertex Index")
+        ax.set_ylabel("Parameter Value")
+        ax.legend()
+        ax.grid(True, linestyle="--", alpha=0.5)
+
+    if show_plot:
+        plt.tight_layout()
         plt.show()

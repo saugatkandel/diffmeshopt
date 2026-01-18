@@ -15,26 +15,36 @@ classifiers = [
     "License :: OSI Approved :: MIT License",
     "Operating System :: OS Independent",
 ]
+
+# There is redundancy between [dependencies] and pixi.toml's [pypi-dependencies],
+# but this is necessary because pyproject.toml is the standard way to specify
+# dependencies for Python projects, while pixi.toml is used for managing the
+# development environment and tasks.
 dependencies = [
-    "torch",                                                             # Core tensor library
-    "torchvision",                                                       # Computer vision models and transforms
-    "pytorch3d @ git+https://github.com/facebookresearch/pytorch3d.git", # 3D geometry
-    "numpy",                                                             # Numerical operations
-    "scipy",                                                             # Scientific computing, used for splines
-    "trimesh",                                                           # Mesh loading and processing
-    "scikit-image",                                                      # Image processing algorithms
-    "opencv-python",                                                     # Image processing utilities
-    "zarr",                                                              # Chunked array storage
-    "ome-zarr",                                                          # Bio-imaging specific zarr format
-    "tqdm",                                                              # Progress bars
-    "click",                                                             # For creating command-line interfaces
-    "pydantic",                                                          # Data validation and settings management
+    "torch",              # Core tensor library
+    "torchvision",        # Computer vision models and transforms
+    "numpy",              # Numerical operations
+    "scipy",              # Scientific computing, used for splines
+    "trimesh",            # Mesh loading and processing
+    "scikit-image",       # Image processing algorithms
+    "opencv-python",      # Image processing utilities
+    "zarr",               # Chunked array storage
+    "ome-zarr",           # Bio-imaging specific zarr format
+    "tqdm",               # Progress bars
+    "click",              # For creating command-line interfaces
+    "pydantic",           # Data validation and settings management
+    "cryoet-data-portal", # Data access from CryoET data portal
+    "jupyterlab",         # Interactive notebooks
+    "ipywidgets",         # Interactive widgets for Jupyter
+
 ]
 
 [project.optional-dependencies]
 test = ["pytest"]
 notebook = ["jupyterlab", "ipywidgets", "ipykernel", "matplotlib", "plotly"]
-
+pytorch3d = [
+    "pytorch3d @ git+https://github.com/facebookresearch/pytorch3d.git", # 3D geometry
+]
 [tool.ruff]
 line-length = 99
 target-version = "py312"

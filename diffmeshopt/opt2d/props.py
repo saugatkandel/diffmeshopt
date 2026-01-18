@@ -4,7 +4,11 @@ from pydantic import BaseModel
 class TemplateProps(BaseModel):
     peak_dist: float = 6.0
     sigma: float = 0.75
+    amp: float = 1.0
     num_samples: int = 21
+    num_control_points: int = 10
+    neural_hidden_dim: int = 32
+    neural_num_layers: int = 2
 
 
 class SamplingProps(BaseModel):

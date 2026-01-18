@@ -30,23 +30,47 @@ class BiGaussianLoss(nn.Module):
 
     @staticmethod
     def get_bigaussian_profile(
-        x: torch.Tensor, peak_dist: float | torch.Tensor, sigma: float | torch.Tensor
+        x: torch.Tensor,
+        peak_dist: float | torch.Tensor,
+        sigma: float | torch.Tensor | None = None,
+        sigma1: float | torch.Tensor | None = None,
+        sigma2: float | torch.Tensor | None = None,
+        amp1: float | torch.Tensor | None = None,
+        amp2: float | torch.Tensor | None = None,
     ) -> torch.Tensor:
         """
         Generates the raw BiGaussian intensity profile.
         """
+        # Defaults
+        if sigma1 is None:
+            sigma1 = sigma if sigma is not None else 1.0
+        if sigma2 is None:
+            sigma2 = sigma if sigma is not None else 1.0
+        if amp1 is None:
+            amp1 = 1.0
+        if amp2 is None:
+            amp2 = 1.0
+
         # Handle broadcasting for batch optimization
-        if isinstance(peak_dist, torch.Tensor) and peak_dist.ndim == 1:
-            peak_dist = peak_dist.unsqueeze(-1)
-        if isinstance(sigma, torch.Tensor) and sigma.ndim == 1:
-            sigma = sigma.unsqueeze(-1)
+        # We assume inputs are either scalars or (N,) tensors.
+        # We need (N, 1) for broadcasting against x (L,).
+        def _ensure_dim(t):
+            if isinstance(t, torch.Tensor) and t.ndim == 1:
+                return t.unsqueeze(-1)
+            return t
+
+        peak_dist = _ensure_dim(peak_dist)
+        sigma1 = _ensure_dim(sigma1)
+        sigma2 = _ensure_dim(sigma2)
+        amp1 = _ensure_dim(amp1)
+        amp2 = _ensure_dim(amp2)
 
         # Peaks at +/- peak_dist / 2
         mu1 = -peak_dist / 2
         mu2 = peak_dist / 2
 
-        template = torch.exp(-((x - mu1) ** 2) / (2 * sigma**2)) + torch.exp(
-            -((x - mu2) ** 2) / (2 * sigma**2)
+        template = amp1 * torch.exp(-((x - mu1) ** 2) / (2 * sigma1**2)) + amp2 * torch.exp(
+            -((x - mu2) ** 2) / (2 * sigma2**2)
         )
 
         # Normalize template so that correlation is 1.0 for perfect match
@@ -60,6 +84,11 @@ class BiGaussianLoss(nn.Module):
         profiles: torch.Tensor,
         peak_dist: torch.Tensor | None = None,
         sigma: torch.Tensor | None = None,
+        sigma1: torch.Tensor | None = None,
+        sigma2: torch.Tensor | None = None,
+        amp1: torch.Tensor | None = None,
+        amp2: torch.Tensor | None = None,
+        mask: torch.Tensor | None = None,
     ) -> torch.Tensor:
         # profiles: (N, K)
         # Normalize profiles
@@ -67,8 +96,16 @@ class BiGaussianLoss(nn.Module):
         std = profiles.std(dim=-1, keepdim=True)
         profiles_norm = (profiles - mean) / (std + 1e-8)
 
-        if peak_dist is not None and sigma is not None:
-            template = self.get_bigaussian_profile(self.x, peak_dist, sigma)
+        if peak_dist is not None:
+            template = self.get_bigaussian_profile(
+                self.x,
+                peak_dist=peak_dist,
+                sigma=sigma,
+                sigma1=sigma1,
+                sigma2=sigma2,
+                amp1=amp1,
+                amp2=amp2,
+            )
         else:
             template = self.template
 
@@ -76,7 +113,14 @@ class BiGaussianLoss(nn.Module):
         correlation = (profiles_norm * template).mean(dim=-1)
 
         # We want to maximize correlation, so minimize 1 - correlation
-        loss = 1 - correlation
+        loss = 1.0 - correlation
+
+        if mask is not None:
+            if mask.dtype == torch.bool:
+                mask = mask.float()
+            # Compute weighted mean (avoid division by zero)
+            return (loss * mask).sum() / (mask.sum() + 1e-8)
+
         return loss.mean()
 
 
@@ -152,11 +196,25 @@ class TemplateShapeLoss(nn.Module):
     def __init__(self):
         super().__init__()
 
-    def forward(self, profiles: torch.Tensor, template: torch.Tensor) -> torch.Tensor:
+    def forward(
+        self,
+        profiles: torch.Tensor,
+        template: torch.Tensor,
+        mask: torch.Tensor | None = None,
+    ) -> torch.Tensor:
+        if mask is not None:
+            if mask.sum() == 0:
+                return torch.tensor(0.0, device=profiles.device)
+            profiles = profiles[mask.bool()]
+
+        if profiles.shape[0] == 0:
+            return torch.tensor(0.0, device=profiles.device)
+
         mean_profile = profiles.mean(dim=0)
         mp_mean = mean_profile.mean()
         mp_std = mean_profile.std()
         mean_profile_norm = (mean_profile - mp_mean) / (mp_std + 1e-8)
+
         return F.mse_loss(mean_profile_norm, template)
 
 
@@ -185,19 +243,26 @@ class ContourLoss(nn.Module):
         points_for_reg: torch.Tensor,
         peak_dist: torch.Tensor | None = None,
         sigma: torch.Tensor | None = None,
+        sigma1: torch.Tensor | None = None,
+        sigma2: torch.Tensor | None = None,
+        amp1: torch.Tensor | None = None,
+        amp2: torch.Tensor | None = None,
+        mask: torch.Tensor | None = None,
     ) -> dict[str, torch.Tensor]:
         # Data Loss: Cross-correlation with template
         # If peak_dist/sigma are provided (from TemplateModel), they are used.
-        data_loss = self.data_loss_fn(profiles, peak_dist, sigma)
+        data_loss = self.data_loss_fn(
+            profiles, peak_dist, sigma, sigma1, sigma2, amp1, amp2, mask=mask
+        )
 
         shape_loss = torch.tensor(0.0, device=profiles.device)
-        if peak_dist is not None and sigma is not None:
+        if peak_dist is not None:
             # Shape Loss: Match the shape of the consensus (mean) profile to the template.
             # This acts as a constraint to keep dynamic templates grounded to the data mean.
             template = self.data_loss_fn.get_bigaussian_profile(
-                self.data_loss_fn.x, peak_dist, sigma
+                self.data_loss_fn.x, peak_dist, sigma, sigma1, sigma2, amp1, amp2
             )
-            shape_loss = self.shape_loss_fn(profiles, template)
+            shape_loss = self.shape_loss_fn(profiles, template, mask=mask)
 
         laplacian_loss = self.laplacian_loss_fn(points_for_reg)
         edge_loss = self.edge_loss_fn(points_for_reg)

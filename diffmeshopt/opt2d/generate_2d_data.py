@@ -83,6 +83,41 @@ def load_real_data(path):
     return tomo_slice, initial_contour, np.zeros((0, 2))
 
 
+def trim_data(image, contour, gt=None, margin=50):
+    """
+    Trims the image around the contour with a given margin.
+    Returns cropped image and updated coordinates.
+    """
+    if margin <= 0 or contour is None:
+        return image, contour, gt
+
+    print(f"Trimming image with margin {margin}...")
+    # Contour is (N, 2) -> (row, col)
+    min_row, min_col = np.floor(np.min(contour, axis=0)).astype(int)
+    max_row, max_col = np.ceil(np.max(contour, axis=0)).astype(int)
+
+    # Apply margin and clip to image bounds
+    row_start = max(0, min_row - margin)
+    row_end = min(image.shape[0], max_row + margin)
+    col_start = max(0, min_col - margin)
+    col_end = min(image.shape[1], max_col + margin)
+
+    # Crop
+    image = image[row_start:row_end, col_start:col_end]
+
+    # Update coordinates (on copies)
+    contour = contour.copy()
+    contour[:, 0] -= row_start
+    contour[:, 1] -= col_start
+
+    if gt is not None and len(gt) > 0:
+        gt = gt.copy()
+        gt[:, 0] -= row_start
+        gt[:, 1] -= col_start
+
+    return image, contour, gt
+
+
 @click.command()
 @click.option(
     "--real-path",
@@ -98,7 +133,13 @@ def load_real_data(path):
     default="data/2d_training_data.pkl",
     help="Output path for the generated data.",
 )
-def main(real_path, synthetic, visualize, output):
+@click.option(
+    "--trim-margin",
+    type=int,
+    default=50,
+    help="Margin in pixels to trim around the segmentation.",
+)
+def main(real_path, synthetic, visualize, output, trim_margin):
     output.parent.mkdir(parents=True, exist_ok=True)
 
     image = None
@@ -116,6 +157,9 @@ def main(real_path, synthetic, visualize, output):
 
     if image is None:
         image, contour, gt = generate_synthetic_data()
+
+    # Trim image around contour if requested
+    image, contour, gt = trim_data(image, contour, gt, trim_margin)
 
     joblib.dump({"image": image, "contour": contour, "gt": gt}, output)
     print(f"Data saved to {output}")
