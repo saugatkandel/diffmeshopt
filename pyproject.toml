@@ -36,13 +36,13 @@ dependencies = [
     "cryoet-data-portal", # Data access from CryoET data portal
     "jupyterlab",         # Interactive notebooks
     "ipywidgets",         # Interactive widgets for Jupyter
-
 ]
 
 [project.optional-dependencies]
 test = ["pytest"]
 notebook = ["jupyterlab", "ipywidgets", "ipykernel", "matplotlib", "plotly"]
 pytorch3d = [
+    "setuptools",
     "pytorch3d @ git+https://github.com/facebookresearch/pytorch3d.git", # 3D geometry
 ]
 [tool.ruff]

@@ -29,7 +29,8 @@ This document outlines the strategy for implementing and testing the differentia
     *   **Masking**: Ignores profiles that cross image boundaries.
 3.  **Template Model**:
     *   Predicts template parameters $\theta_i = (\sigma_i, d_i, A_i)$ for each point.
-    *   **Models**: Fixed, Global, Per-Point, B-Spline (1D along contour), Neural Field (MLP on $x,y$).
+    *   **Models**: Fixed, Global, Per-Point, B-Spline (1D along contour), Neural Field (MLP on $x,y$), Grid (2D learnable map), Gaussian Splat (RBFs).
+    *   **Factory**: `TemplateModelFactory` handles instantiation to decouple `optimize.py` from specific model classes.
 
 ## 4. Loss Functions (`diffmeshopt/opt2d/loss.py`)
 
@@ -43,7 +44,19 @@ This document outlines the strategy for implementing and testing the differentia
 *   **Edge Length Consistency**: Penalize variance in edge lengths to prevent vertex bunching.
 *   **Template Regularization**: Smoothness priors for Per-Point template models.
 
-## 5. Execution Plan
+## 5. Evaluation & Training
+*   **Metrics** (`diffmeshopt/opt2d/evaluation.py`):
+    *   Mean Distance to Ground Truth.
+    *   Hausdorff Distance.
+*   **Trainer** (`diffmeshopt/opt2d/trainer.py`):
+    *   `OptimizationTrainer` class to manage the loop.
+    *   `wandb` logging.
+    *   `TensorBoard` logging (local alternative).
+    *   Checkpointing via `joblib`.
+*   **Storage**:
+    *   `ContourRefiner.export_state()` to save contour and parameters.
+
+## 6. Execution Plan
 
 ### Step 1: Setup (Done)
 *   Implemented data generation, loss functions, and refiners.

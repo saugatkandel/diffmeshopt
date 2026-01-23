@@ -7,7 +7,8 @@ if [ -d "/workspace/diffmeshopt" ]; then
     cd /workspace/diffmeshopt
     if [ -f "pixi.toml" ]; then
         echo "Running pixi install in /workspace/diffmeshopt..."
-        pixi install
+        pixi install --skip pytorch3d
+        #pixi install
     else
         echo "No pixi.toml found in /workspace/diffmeshopt. Skipping install."
     fi

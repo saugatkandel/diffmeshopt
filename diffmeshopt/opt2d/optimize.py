@@ -9,16 +9,10 @@ from diffmeshopt.opt2d.geometry import get_bspline_derivative_matrix, get_bsplin
 from diffmeshopt.opt2d.loss import ContourLoss
 from diffmeshopt.opt2d.props import OptimizationProps, SamplingProps, TemplateProps
 from diffmeshopt.opt2d.sampling import sample_profiles_stochastic
-from diffmeshopt.opt2d.template import (
-    BSplineTemplateModel,
-    FixedTemplateModel,
-    GlobalOptimizableTemplateModel,
-    NeuralFieldTemplateModel,
-    PerPointTemplateModel,
-)
+from diffmeshopt.opt2d.template import TemplateModelFactory
 
 
-class ContourRefinerBase(nn.Module):
+class ContourRefinerBase(nn.Module, abc.ABC):
     def __init__(
         self,
         image: np.ndarray,
@@ -42,23 +36,16 @@ class ContourRefinerBase(nn.Module):
             laplacian_window_size=laplacian_window_size,
         )
 
-        if template_mode == "per_point":
-            self.template_model = PerPointTemplateModel(num_vertices, self.template_props)
-        elif template_mode == "global":
-            self.template_model = GlobalOptimizableTemplateModel(self.template_props)
-        elif template_mode == "fixed":
-            self.template_model = FixedTemplateModel(self.template_props)
-        elif template_mode == "bspline":
-            self.template_model = BSplineTemplateModel(num_vertices, self.template_props)
-        elif template_mode == "neural":
-            self.template_model = NeuralFieldTemplateModel(self.template_props)
-        else:
-            raise ValueError(f"Unknown template_mode: {template_mode}")
+        H, W = image.shape[-2:]
+
+        self.template_model = TemplateModelFactory.create(
+            template_mode, self.template_props, num_vertices=num_vertices, image_shape=(H, W)
+        )
 
     @property
     @abc.abstractmethod
     def contour(self) -> torch.Tensor:
-        raise NotImplementedError
+        pass
 
     @property
     def points_for_regularization(self) -> torch.Tensor:
@@ -80,7 +67,7 @@ class ContourRefinerBase(nn.Module):
 
     @abc.abstractmethod
     def _get_optimizer_params(self) -> list:
-        raise NotImplementedError
+        pass
 
     def configure_optimizer(self):
         lr = self.optimization_props.lr
@@ -132,6 +119,24 @@ class ContourRefinerBase(nn.Module):
         losses = self._forward_propagate()
         self.optimizer.step()
         return {k: v.item() for k, v in losses.items()}
+
+    def export_state(self) -> dict:
+        """
+        Exports the current state of the contour and template parameters as numpy arrays.
+        """
+        with torch.no_grad():
+            contour_np = self.contour.detach().cpu().numpy()
+            # Get template parameters for the whole contour
+            params_torch = self.template_model.get_params(coordinates=self.contour)
+            params_np = {
+                k: v.detach().cpu().numpy() if isinstance(v, torch.Tensor) else v
+                for k, v in params_torch.items()
+            }
+            return {
+                "contour": contour_np,
+                "template_params": params_np,
+                "mode": self.template_model.mode.value if self.template_model.mode else "unknown",
+            }
 
 
 class ContourRefiner(ContourRefinerBase):

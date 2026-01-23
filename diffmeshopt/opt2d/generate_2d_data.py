@@ -130,7 +130,7 @@ def trim_data(image, contour, gt=None, margin=50):
 @click.option(
     "--output",
     type=click.Path(path_type=Path),
-    default="data/2d_training_data.pkl",
+    default="/workspace/diffmeshopt/data/2d_training_data.pkl",
     help="Output path for the generated data.",
 )
 @click.option(

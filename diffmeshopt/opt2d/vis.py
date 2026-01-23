@@ -3,7 +3,9 @@ import numpy as np
 import torch
 from matplotlib.axes import Axes
 
+import diffmeshopt.opt2d.geometry as geometry
 import diffmeshopt.opt2d.optimize as opt2d
+import diffmeshopt.opt2d.sampling as sampling
 from diffmeshopt.opt2d.geometry import get_bspline_matrix
 from diffmeshopt.opt2d.loss import BiGaussianLoss
 from diffmeshopt.opt2d.props import SamplingProps, TemplateProps
@@ -206,14 +208,14 @@ def plot_contour_normals(
     if stochastic:
         # Simulate the stochastic sampling used in optimization
         indices = (
-            opt2d._get_stratified_indices(len(contour), num_lines, device=contour_tensor.device)
+            sampling._get_stratified_indices(len(contour), num_lines, device=contour_tensor.device)
             .cpu()
             .numpy()
         )
 
         # Extract coarse contour and compute normals on it
         coarse_contour = contour_tensor[indices]
-        normals = opt2d.compute_normals(coarse_contour).numpy()
+        normals = geometry.compute_normals(coarse_contour).numpy()
 
         active_points = contour[indices]
         active_normals = normals

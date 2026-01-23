@@ -14,7 +14,10 @@ We have implemented a 2D prototype for refining organelle segmentations using a 
 *   `diffmeshopt/opt2d/geometry.py`: Geometric utility functions.
 *   `diffmeshopt/opt2d/props.py`: Configuration data structures.
 *   `diffmeshopt/opt2d/vis.py`: Visualization utilities.
+*   `diffmeshopt/opt2d/trainer.py`: Encapsulates the optimization loop, logging (wandb), and checkpointing.
+*   `diffmeshopt/opt2d/evaluation.py`: Geometric evaluation metrics.
 *   `notebooks/optimize_2d.ipynb`: Interactive optimization loop with visualization.
+*   `notebooks/train_2d.ipynb`: Training loop with TensorBoard visualization.
 *   `tests/opt2d/`: Unit and integration tests.
 
 ## Current State
@@ -28,18 +31,18 @@ We have implemented a 2D prototype for refining organelle segmentations using a 
 - **B-Spline Parameterization**:
     - A `BSplineContourRefiner` class has been added to `diffmeshopt/opt2d/optimize.py` to optimize control points instead of raw vertices, enforcing smoothness by construction.
     - **Note:** This B-spline refiner has not yet been tested.
+    - **Update**: Now uses analytical derivatives for exact normal calculation (vectorized).
 - **Bug Fixes**:
     - Fixed `make_splprep` usage (it returns a (BSpline, u) tuple).
     - **Robustness**: Added validity masking to handle profiles that extend outside image boundaries.
-- **B-Spline Refinement**:
-    - `BSplineContourRefiner` optimizes control points instead of raw vertices.
-    - **Update**: Now uses analytical derivatives for exact normal calculation (vectorized).
 - **Template Optimization**:
     - Implemented multiple strategies for spatially varying template parameters (`sigma`, `amplitude`, `peak_dist`):
         - `GlobalOptimizableTemplateModel`: Single learnable set of parameters.
         - `PerPointTemplateModel`: Independent parameters per vertex (with smoothness regularization).
         - `BSplineTemplateModel`: Parameters defined by a B-Spline curve along the contour index.
         - `NeuralFieldTemplateModel`: Parameters predicted by an MLP based on spatial coordinates $(x, y)$.
+        - `GridTemplateModel`: Parameters defined by a learnable 2D grid (bilinear interpolation).
+        - `GaussianSplatTemplateModel`: Parameters defined by a set of Gaussian RBFs (splats) in the image domain.
 - **Data Handling**:
     - Added `trim_data` to `generate_2d_data.py` to crop images around the segmentation.
 
@@ -51,19 +54,19 @@ We have implemented a 2D prototype for refining organelle segmentations using a 
 ## Design Decisions
 - **No Explicit Remeshing**: We avoid remeshing during the optimization loop to maintain differentiability. Instead, we rely on `EdgeLengthConsistencyLoss` and `LaplacianSmoothingLoss` to maintain mesh quality.
 - **B-Spline Regularization**: For the B-spline refiner, we apply Laplacian and Edge Length regularization to the **control points** to ensure a uniform parameterization and prevent control point bunching, even though the spline curve itself is inherently smooth.
-- **No Explicit Remeshing**: We avoid remeshing during the optimization loop to maintain differentiability.
-- **B-Spline Regularization**: For the B-spline refiner, we apply regularization to the **control points**.
 - **Implicit Regularization**: We prefer B-Spline or Neural Field parameterizations for template parameters to enforce smoothness implicitly, rather than relying solely on explicit smoothness losses.
 
-## In Progress
-- **2D Optimization Validation**:
-    - The `ContourRefiner` class is implemented but the end-to-end optimization loop has **not yet been validated**.
-    - The next step is to use a Jupyter notebook to run the `ContourRefiner` on synthetic data, visualize the results, and confirm that the contour correctly converges to the target.
 ## In Progress / Next Steps
-1.  **Test Stabilization**: Fix the failing/flaky test cases in `tests/opt2d/`.
-2.  **Real Data Validation**: Run `BSplineContourRefiner` with `BSplineTemplateModel` on the real data slice (`data/20289/...`).
-3.  **Visualization**: Use the new visualization tools to inspect the learned template parameters on real data.
-4.  **Port to 3D**: (Paused until 2D is fully robust).
+1.  **2D Optimization Validation**: Run `ContourRefiner` on synthetic data using the notebook to confirm convergence.
+2.  **Test Stabilization**: Fix the failing/flaky test cases in `tests/opt2d/`.
+3.  **Refactoring**: Implement `TemplateModelFactory` to clean up model instantiation in `optimize.py`.
+4.  **Real Data Validation**: Run `BSplineContourRefiner` with `BSplineTemplateModel` on the real data slice (`data/20289/...`).
+5.  **Visualization**: Use the new visualization tools to inspect the learned template parameters on real data.
+6.  **Port to 3D**: (Paused until 2D is fully robust).
+7.  **Evaluation & Training**:
+    - Added `OptimizationTrainer` for loop management and wandb integration.
+    - Added `compute_contour_metrics` for evaluation.
+    - **Visualization**: Confirmed TensorBoard as the primary tool for local training monitoring (loss curves, contour evolution).
 
 ## Pending Features & Limitations
 - **Template Optimization**: The bi-Gaussian template parameters are currently fixed. Optimization of these parameters (e.g., peak distance, sigma) during the refinement process is not yet implemented.

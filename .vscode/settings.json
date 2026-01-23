@@ -29,5 +29,10 @@
     "notebook.codeActionsOnSave": {
         "notebook.source.fixAll.ruff": "explicit",
         "notebook.source.organizeImports.ruff": "explicit"
-    }
+    },
+    "python.analysis.exclude": [
+        "/workspace/diffmeshopt/data",
+        "**/.pytest_cache",
+        "/workspace/diffmeshopt/output"
+    ]
 }

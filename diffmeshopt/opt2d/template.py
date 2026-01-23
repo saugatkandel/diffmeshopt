@@ -1,18 +1,88 @@
+import abc
+from enum import Enum
+
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 
 from diffmeshopt.opt2d.geometry import get_bspline_matrix
 from diffmeshopt.opt2d.props import TemplateProps
 
 
-class TemplateModel(nn.Module):
+class TemplateMode(Enum):
+    PER_POINT = "per_point"
+    GLOBAL = "global"
+    FIXED = "fixed"
+    BSPLINE = "bspline"
+    NEURAL = "neural"
+    GRID = "grid"
+    SPLAT = "splat"
+
+
+class TemplateModelFactory:
+    @staticmethod
+    def create(
+        mode: str | TemplateMode, props, num_vertices: int = None, image_shape: tuple = None
+    ):
+        # Convert string to Enum if necessary
+        if isinstance(mode, str):
+            try:
+                mode = TemplateMode(mode.lower())
+            except ValueError:
+                raise ValueError(
+                    "Unknown template_mode: "
+                    + f"{mode}. Available modes: {[m.value for m in TemplateMode]}"
+                ) from TemplateMode
+
+        model = None
+        # Validation and Instantiation
+        if mode == TemplateMode.PER_POINT:
+            if num_vertices is None:
+                raise ValueError("num_vertices is required for PER_POINT mode")
+            model = PerPointTemplateModel(num_vertices, props)
+
+        elif mode == TemplateMode.GLOBAL:
+            model = GlobalOptimizableTemplateModel(props)
+
+        elif mode == TemplateMode.FIXED:
+            model = FixedTemplateModel(props)
+
+        elif mode == TemplateMode.BSPLINE:
+            if num_vertices is None:
+                raise ValueError("num_vertices is required for BSPLINE mode")
+            model = BSplineTemplateModel(num_vertices, props)
+
+        elif mode == TemplateMode.NEURAL:
+            model = NeuralFieldTemplateModel(props)
+
+        elif mode == TemplateMode.GRID:
+            if image_shape is None:
+                raise ValueError("image_shape (H, W) is required for GRID mode")
+            model = GridTemplateModel(props, image_shape)
+
+        elif mode == TemplateMode.SPLAT:
+            if image_shape is None:
+                raise ValueError("image_shape (H, W) is required for SPLAT mode")
+            model = GaussianSplatTemplateModel(props, image_shape)
+
+        if model is not None:
+            model.mode = mode
+            return model
+
+        raise ValueError(f"Factory implementation missing for mode: {mode}")
+
+
+class TemplateModel(nn.Module, abc.ABC):
     def __init__(self, props: TemplateProps):
         super().__init__()
         self.props = props
+        self.image_shape = None  # Set by refiner if needed
+        self.mode = None
         # Register initial values to keep them on the correct device
         self.register_buffer("peak_dist_init", torch.tensor(float(props.peak_dist)))
         self.register_buffer("sigma_init", torch.tensor(float(props.sigma)))
 
+    @abc.abstractmethod
     def get_params(
         self,
         batch_indices: torch.Tensor | None = None,
@@ -23,7 +93,7 @@ class TemplateModel(nn.Module):
         coordinates: (N, 2) tensor of spatial positions (used for Neural Fields).
         If batch_indices is None, returns parameters for all points.
         """
-        raise NotImplementedError
+        pass
 
     def get_regularization_loss(self) -> dict[str, torch.Tensor]:
         return {}
@@ -190,6 +260,93 @@ class NeuralFieldTemplateModel(TemplateModel):
 
         # Apply learned residuals in log space (ensures positivity)
         # out: [d_peak, d_s1, d_s2, d_a1, d_a2]
+        return {
+            "peak_dist": (base_peak + out[:, 0]).exp(),
+            "sigma1": (base_sigma + out[:, 1]).exp(),
+            "sigma2": (base_sigma + out[:, 2]).exp(),
+            "amp1": (base_amp + out[:, 3]).exp(),
+            "amp2": (base_amp + out[:, 4]).exp(),
+        }
+
+
+class GridTemplateModel(TemplateModel):
+    def __init__(self, props: TemplateProps, image_shape: tuple[int, int]):
+        super().__init__(props)
+        self.image_shape = image_shape
+        # Learnable grid: (1, 5, H, W)
+        # 5 channels: peak_dist, sigma1, sigma2, amp1, amp2
+        self.grid = nn.Parameter(torch.zeros(1, 5, props.grid_size, props.grid_size))
+
+    def get_params(
+        self,
+        batch_indices: torch.Tensor | None = None,
+        coordinates: torch.Tensor | None = None,
+    ) -> dict[str, torch.Tensor]:
+        if coordinates is None:
+            raise ValueError("GridTemplateModel requires coordinates")
+
+        # Normalize coordinates to [-1, 1] for grid_sample
+        # coordinates are (y, x) in pixels
+        H, W = self.image_shape
+        norm_x = (coordinates[:, 1] / (W - 1)) * 2 - 1
+        norm_y = (coordinates[:, 0] / (H - 1)) * 2 - 1
+        grid_coords = torch.stack([norm_x, norm_y], dim=-1).view(1, 1, -1, 2)
+
+        # Sample from grid
+        out = F.grid_sample(self.grid, grid_coords, align_corners=True).view(5, -1).T
+
+        # Apply residuals to base values
+        base_peak = self.peak_dist_init.log()
+        base_sigma = self.sigma_init.log()
+        base_amp = torch.tensor(self.props.amp, device=out.device).log()
+
+        return {
+            "peak_dist": (base_peak + out[:, 0]).exp(),
+            "sigma1": (base_sigma + out[:, 1]).exp(),
+            "sigma2": (base_sigma + out[:, 2]).exp(),
+            "amp1": (base_amp + out[:, 3]).exp(),
+            "amp2": (base_amp + out[:, 4]).exp(),
+        }
+
+
+class GaussianSplatTemplateModel(TemplateModel):
+    def __init__(self, props: TemplateProps, image_shape: tuple[int, int]):
+        super().__init__(props)
+        self.image_shape = image_shape
+        num_splats = props.num_splats
+        H, W = image_shape
+
+        # Initialize splats randomly in the image domain
+        self.centers = nn.Parameter(torch.rand(num_splats, 2) * torch.tensor([H, W]))
+        # Splat influence radius (inverse scale)
+        self.log_radius = nn.Parameter(torch.ones(num_splats) * 3.0)
+        # Parameter payloads (residuals)
+        self.payloads = nn.Parameter(torch.zeros(num_splats, 5))
+
+    def get_params(
+        self,
+        batch_indices: torch.Tensor | None = None,
+        coordinates: torch.Tensor | None = None,
+    ) -> dict[str, torch.Tensor]:
+        if coordinates is None:
+            raise ValueError("GaussianSplatTemplateModel requires coordinates")
+
+        # Compute RBF weights: exp(-dist^2 / (2 * radius^2))
+        # coordinates: (B, 2), centers: (K, 2)
+        dists_sq = torch.cdist(coordinates, self.centers, p=2) ** 2  # (B, K)
+        radii_sq = self.log_radius.exp() ** 2
+        weights = torch.exp(-dists_sq / (2 * radii_sq.unsqueeze(0)))  # (B, K)
+
+        # Normalize weights (Shepard's method)
+        weights = weights / (weights.sum(dim=1, keepdim=True) + 1e-8)
+
+        # Interpolate payloads
+        out = weights @ self.payloads  # (B, 5)
+
+        base_peak = self.peak_dist_init.log()
+        base_sigma = self.sigma_init.log()
+        base_amp = torch.tensor(self.props.amp, device=out.device).log()
+
         return {
             "peak_dist": (base_peak + out[:, 0]).exp(),
             "sigma1": (base_sigma + out[:, 1]).exp(),

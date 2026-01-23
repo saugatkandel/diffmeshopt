@@ -109,6 +109,7 @@ class BiGaussianLoss(nn.Module):
         else:
             template = self.template
 
+        template = torch.atleast_2d(template)  # (N, K) for broadcasting
         # Cross correlation
         correlation = (profiles_norm * template).mean(dim=-1)
 
