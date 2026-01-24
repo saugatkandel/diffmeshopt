@@ -116,23 +116,36 @@ class GlobalOptimizableTemplateModel(TemplateModel):
     def __init__(self, props: TemplateProps):
         super().__init__(props)
         # Single scalar parameters for the whole contour
-        self.log_peak_dist = nn.Parameter(torch.tensor(float(props.peak_dist)).log())
         self.log_sigma = nn.Parameter(torch.tensor(float(props.sigma)).log())
+
+        # Reparameterization: peak_dist = sigma * (2.0 + excess)
+        # This enforces peak_dist > min_peak_ratio * sigma structurally.
+        init_ratio = props.peak_dist / props.sigma
+        init_excess = max(init_ratio - props.min_peak_ratio, 1e-6)
+        self.log_excess = nn.Parameter(torch.tensor(init_excess).log())
 
     def get_params(
         self,
         batch_indices: torch.Tensor | None = None,
         coordinates: torch.Tensor | None = None,
     ) -> dict[str, torch.Tensor]:
+        sigma = self.log_sigma.exp()
+        excess = self.log_excess.exp()
+        peak_dist = sigma * (self.props.min_peak_ratio + excess)
         return {
-            "peak_dist": self.log_peak_dist.exp(),
-            "sigma": self.log_sigma.exp(),
+            "peak_dist": peak_dist,
+            "sigma": sigma,
         }
 
     def get_regularization_loss(self) -> dict[str, torch.Tensor]:
         # Weak prior to stay near initialization
+        # Reconstruct log_peak_dist for the prior
+        sigma = self.log_sigma.exp()
+        peak_dist = sigma * (self.props.min_peak_ratio + self.log_excess.exp())
+        log_peak_dist = peak_dist.log()
+
         prior = (self.log_sigma - self.sigma_init.log()).pow(2) + (
-            self.log_peak_dist - self.peak_dist_init.log()
+            log_peak_dist - self.peak_dist_init.log()
         ).pow(2)
         return {"sigma_reg": prior}
 
@@ -141,31 +154,43 @@ class PerPointTemplateModel(TemplateModel):
     def __init__(self, num_points: int, props: TemplateProps):
         super().__init__(props)
         # Parameters for each point
-        self.log_peak_dist = nn.Parameter(torch.full((num_points,), float(props.peak_dist)).log())
         self.log_sigma = nn.Parameter(torch.full((num_points,), float(props.sigma)).log())
+
+        init_ratio = props.peak_dist / props.sigma
+        init_excess = max(init_ratio - props.min_peak_ratio, 1e-6)
+        self.log_excess = nn.Parameter(torch.full((num_points,), init_excess).log())
 
     def get_params(
         self,
         batch_indices: torch.Tensor | None = None,
         coordinates: torch.Tensor | None = None,
     ) -> dict[str, torch.Tensor]:
+        sigma = self.log_sigma.exp()
+        excess = self.log_excess.exp()
+        peak_dist = sigma * (self.props.min_peak_ratio + excess)
+
         if batch_indices is not None:
             return {
-                "peak_dist": self.log_peak_dist[batch_indices].exp(),
-                "sigma": self.log_sigma[batch_indices].exp(),
+                "peak_dist": peak_dist[batch_indices],
+                "sigma": sigma[batch_indices],
             }
         return {
-            "peak_dist": self.log_peak_dist.exp(),
-            "sigma": self.log_sigma.exp(),
+            "peak_dist": peak_dist,
+            "sigma": sigma,
         }
 
     def get_regularization_loss(self) -> dict[str, torch.Tensor]:
         # Regularization: Gaussian prior on log(sigma) centered at initialization
         prior = (self.log_sigma - self.sigma_init.log()).pow(2).mean()
 
+        # Reconstruct log_peak_dist for smoothness
+        sigma = self.log_sigma.exp()
+        peak_dist = sigma * (self.props.min_peak_ratio + self.log_excess.exp())
+        log_peak_dist = peak_dist.log()
+
         # Smoothness: Penalize changes along the contour
         diff_sigma = self.log_sigma - torch.roll(self.log_sigma, shifts=1, dims=0)
-        diff_peak = self.log_peak_dist - torch.roll(self.log_peak_dist, shifts=1, dims=0)
+        diff_peak = log_peak_dist - torch.roll(log_peak_dist, shifts=1, dims=0)
         smoothness = diff_sigma.pow(2).mean() + diff_peak.pow(2).mean()
 
         return {"sigma_reg": prior, "template_smooth": smoothness}
@@ -179,13 +204,16 @@ class BSplineTemplateModel(TemplateModel):
 
         # Precompute B-spline evaluation matrix
         # Shape: (num_eval, num_cp)
-        self.register_buffer("M", get_bspline_matrix(self.num_cp, self.num_eval))
+        self.register_buffer("M", get_bspline_matrix(self.num_cp, self.num_eval), persistent=False)
 
         # Initialize control points in log space for positivity
         # Parameters: peak_dist, sigma1, sigma2, amp1, amp2
-        self.log_peak_dist_cp = nn.Parameter(
-            torch.full((self.num_cp,), float(props.peak_dist)).log()
-        )
+        # Reparameterize: peak_dist = (sigma1 + sigma2) * (1.0 + excess)
+        # Factor is min_peak_ratio / 2.0 because we sum two sigmas
+        init_ratio = props.peak_dist / (2 * props.sigma)  # Assuming sigma1=sigma2=sigma
+        init_excess = max(init_ratio - props.min_peak_ratio / 2.0, 1e-6)
+        self.log_excess_cp = nn.Parameter(torch.full((self.num_cp,), init_excess).log())
+
         self.log_sigma1_cp = nn.Parameter(torch.full((self.num_cp,), float(props.sigma)).log())
         self.log_sigma2_cp = nn.Parameter(torch.full((self.num_cp,), float(props.sigma)).log())
         self.log_amp1_cp = nn.Parameter(torch.full((self.num_cp,), float(props.amp)).log())
@@ -198,11 +226,14 @@ class BSplineTemplateModel(TemplateModel):
     ) -> dict[str, torch.Tensor]:
         # Evaluate B-splines to get dense parameters
         # (num_eval, num_cp) @ (num_cp,) -> (num_eval,)
-        peak_dist = (self.M @ self.log_peak_dist_cp).exp()
+        excess = (self.M @ self.log_excess_cp).exp()
         sigma1 = (self.M @ self.log_sigma1_cp).exp()
         sigma2 = (self.M @ self.log_sigma2_cp).exp()
         amp1 = (self.M @ self.log_amp1_cp).exp()
         amp2 = (self.M @ self.log_amp2_cp).exp()
+
+        # Enforce separation: peak_dist > sigma1 + sigma2
+        peak_dist = (sigma1 + sigma2) * (self.props.min_peak_ratio / 2.0 + excess)
 
         if batch_indices is not None:
             return {

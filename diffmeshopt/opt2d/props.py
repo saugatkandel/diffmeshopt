@@ -9,6 +9,7 @@ class TemplateProps(BaseModel):
     num_control_points: int = 10
     neural_hidden_dim: int = 32
     neural_num_layers: int = 2
+    min_peak_ratio: float = 2.0
 
 
 class SamplingProps(BaseModel):
@@ -25,4 +26,5 @@ class OptimizationProps(BaseModel):
     w_edge: float = 0.1
     w_sigma_reg: float = 0.1
     w_template_shape: float = 0.1
+    w_template_smooth: float = 1.0
     batch_size: int = 100

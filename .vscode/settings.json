@@ -31,8 +31,13 @@
         "notebook.source.organizeImports.ruff": "explicit"
     },
     "python.analysis.exclude": [
+        "**/node_modules",
+        "**/__pycache__",
+        "**/.*",
+        ".pixi",
+        ".venv",
         "/workspace/diffmeshopt/data",
-        "**/.pytest_cache",
-        "/workspace/diffmeshopt/output"
+        "/workspace/diffmeshopt/output",
+        "**/.pytest_cache"
     ]
 }

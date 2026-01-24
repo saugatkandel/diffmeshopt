@@ -10,6 +10,9 @@ def compute_contour_metrics(
 ) -> dict[str, float]:
     """
     Computes geometric metrics comparing the optimized contour to the ground truth.
+    NOTE: This computes bidirectional metrics. Currently, we prefer unidirectional
+    metrics using the distance map for training efficiency, but this is kept for
+    potential future use.
 
     Args:
         contour: (N, 2) numpy array or torch tensor of vertices.
@@ -73,11 +76,16 @@ def compute_contour_metrics(
 
 
 def compute_metrics_from_map(
-    contour: torch.Tensor, distance_map: torch.Tensor
+    contour: torch.Tensor,
+    distance_map: torch.Tensor,
+    calc_chamfer: bool = True,
+    calc_hausdorff: bool = False,
+    calc_p95: bool = False,
 ) -> dict[str, float]:
     """
     Computes metrics using a precomputed distance map (Distance Transform) of the GT.
     This is O(N) and avoids pairwise distance calculation.
+    NOTE: This is unidirectional (Contour -> GT).
 
     Args:
         contour: (N, 2) tensor of (row, col) coordinates.
@@ -107,11 +115,15 @@ def compute_metrics_from_map(
     # (1, 1, 1, N) -> (N,)
     dists = dists.view(-1)
 
-    return {
-        "mean_dist": dists.mean().item(),
-        "hausdorff_dist": dists.max().item(),
-        "p95_dist": torch.quantile(dists, 0.95).item(),
-    }
+    metrics = {}
+    if calc_chamfer:
+        metrics["mean_dist"] = dists.mean().item()
+    if calc_hausdorff:
+        metrics["hausdorff_dist"] = dists.max().item()
+    if calc_p95:
+        metrics["p95_dist"] = torch.quantile(dists, 0.95).item()
+
+    return metrics
 
 
 def compute_gt_distance_map(

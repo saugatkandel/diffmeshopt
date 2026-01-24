@@ -1,4 +1,5 @@
 import abc
+import logging
 
 import numpy as np
 import torch
@@ -12,7 +13,7 @@ from diffmeshopt.opt2d.sampling import sample_profiles_stochastic
 from diffmeshopt.opt2d.template import TemplateModelFactory
 
 
-class ContourRefinerBase(nn.Module, abc.ABC):
+class ContourRefinerBase(nn.Module):
     def __init__(
         self,
         image: np.ndarray,
@@ -24,7 +25,7 @@ class ContourRefinerBase(nn.Module, abc.ABC):
         template_mode: str = "fixed",
     ):
         super().__init__()
-        self.register_buffer("image", torch.from_numpy(image).float())
+        self.register_buffer("image", torch.from_numpy(image).float(), persistent=False)
 
         self.optimization_props = optimization_props or OptimizationProps()
         self.sampling_props = sampling_props or SamplingProps()
@@ -41,6 +42,8 @@ class ContourRefinerBase(nn.Module, abc.ABC):
         self.template_model = TemplateModelFactory.create(
             template_mode, self.template_props, num_vertices=num_vertices, image_shape=(H, W)
         )
+        self.optimizer = None
+        self._initial_state = None
 
     @property
     @abc.abstractmethod
@@ -65,17 +68,14 @@ class ContourRefinerBase(nn.Module, abc.ABC):
         normals = torch.stack([-tangents[:, 1], tangents[:, 0]], dim=1)
         return F.normalize(normals, dim=-1)
 
-    @abc.abstractmethod
-    def _get_optimizer_params(self) -> list:
-        pass
+    def create_optimizer(self) -> torch.optim.Optimizer:
+        """Creates the optimizer configured for this refiner."""
+        return torch.optim.Adam(self.parameters(), lr=self.optimization_props.lr)
 
     def configure_optimizer(self):
-        lr = self.optimization_props.lr
-        # Combine contour parameters with template parameters
-        params = self._get_optimizer_params() + list(self.template_model.parameters())
-        self.optimizer = torch.optim.Adam(params, lr=lr)
+        self.optimizer = self.create_optimizer()
 
-    def _forward_propagate(self):
+    def compute_losses(self):
         # --- Data Loss (Stochastic) ---
         profiles, sub_indices, valid_mask = sample_profiles_stochastic(
             self.image,
@@ -90,33 +90,27 @@ class ContourRefinerBase(nn.Module, abc.ABC):
         # Get template parameters for the sampled points
         template_params = self.template_model.get_params(sub_indices, coordinates=batch_coords)
 
+        # Get template regularization loss
+        reg_losses = self.template_model.get_regularization_loss()
+
         # Calculate main losses
         losses = self.loss_fn(
             profiles,
             self.points_for_regularization,
             **template_params,
             mask=valid_mask,
+            reg_losses=reg_losses,
         )
 
-        # Add template regularization loss
-        reg_losses = self.template_model.get_regularization_loss()
-        w_sigma_reg = getattr(self.optimization_props, "w_sigma_reg", 1.0)
-        w_template_smooth = getattr(self.optimization_props, "w_template_smooth", 1.0)
-
-        if "sigma_reg" in reg_losses:
-            losses["sigma_reg"] = w_sigma_reg * reg_losses["sigma_reg"]
-            losses["total_loss"] += losses["sigma_reg"]
-        if "template_smooth" in reg_losses:
-            losses["template_smooth"] = w_template_smooth * reg_losses["template_smooth"]
-            losses["total_loss"] += losses["template_smooth"]
-
-        losses["total_loss"].backward()
         return losses
 
     def step(self) -> dict[str, float]:
+        if self.optimizer is None:
+            self.configure_optimizer()
         self.optimizer.zero_grad()
 
-        losses = self._forward_propagate()
+        losses = self.compute_losses()
+        losses["total_loss"].backward()
         self.optimizer.step()
         return {k: v.item() for k, v in losses.items()}
 
@@ -137,6 +131,19 @@ class ContourRefinerBase(nn.Module, abc.ABC):
                 "template_params": params_np,
                 "mode": self.template_model.mode.value if self.template_model.mode else "unknown",
             }
+
+    def capture_initial_state(self):
+        """Captures the current state dict as the initial state."""
+        self._initial_state = {k: v.cpu().clone() for k, v in self.state_dict().items()}
+
+    def reset(self):
+        """Resets the parameters to the captured initial state."""
+        if self._initial_state is not None:
+            self.load_state_dict(self._initial_state)
+            # Reset the internal optimizer if it exists, so a fresh one is created
+            self.optimizer = None
+        else:
+            logging.warning("reset() called but no initial state was captured.")
 
 
 class ContourRefiner(ContourRefinerBase):
@@ -160,14 +167,11 @@ class ContourRefiner(ContourRefinerBase):
             template_mode=template_mode,
         )
         self._contour = nn.Parameter(torch.from_numpy(initial_contour).float())
-        self.configure_optimizer()
+        self.capture_initial_state()
 
     @property
     def contour(self) -> torch.Tensor:
         return self._contour
-
-    def _get_optimizer_params(self) -> list:
-        return [self._contour]
 
     def update_contour(self, contour_np: np.ndarray) -> None:
         """
@@ -214,13 +218,17 @@ class BSplineContourRefiner(ContourRefinerBase):
         self.control_points = nn.Parameter(initial_cp)
 
         # 2. Precompute evaluation matrix for the desired resolution
-        self.register_buffer("M_eval", get_bspline_matrix(num_control_points, num_eval_points))
+        self.register_buffer(
+            "M_eval", get_bspline_matrix(num_control_points, num_eval_points), persistent=False
+        )
 
         # 3. Precompute derivative matrix for analytical normals
         self.register_buffer(
-            "M_deriv", get_bspline_derivative_matrix(num_control_points, num_eval_points)
+            "M_deriv",
+            get_bspline_derivative_matrix(num_control_points, num_eval_points),
+            persistent=False,
         )
-        self.configure_optimizer()
+        self.capture_initial_state()
 
     @property
     def contour(self):
@@ -237,6 +245,3 @@ class BSplineContourRefiner(ContourRefinerBase):
         tangents = self.M_deriv @ self.control_points
         normals = torch.stack([-tangents[:, 1], tangents[:, 0]], dim=1)
         return F.normalize(normals, dim=-1)
-
-    def _get_optimizer_params(self) -> list:
-        return [self.control_points]

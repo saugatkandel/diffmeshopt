@@ -4,7 +4,6 @@ import torch
 from matplotlib.axes import Axes
 
 import diffmeshopt.opt2d.geometry as geometry
-import diffmeshopt.opt2d.optimize as opt2d
 import diffmeshopt.opt2d.sampling as sampling
 from diffmeshopt.opt2d.geometry import get_bspline_matrix
 from diffmeshopt.opt2d.loss import BiGaussianLoss
@@ -23,7 +22,7 @@ def plot_prior_and_landscape_from_contour(
     if sampling_props is None:
         sampling_props = SamplingProps()
 
-    sample_profiles, _, _ = opt2d.sample_profiles_stochastic(
+    sample_profiles, _, _ = sampling.sample_profiles_stochastic(
         torch.from_numpy(image).float(),
         torch.from_numpy(contour).float(),
         sampling_props=sampling_props,
@@ -223,7 +222,7 @@ def plot_contour_normals(
         title_suffix = f"(stochastic batch: {len(indices)})"
     else:
         # Compute normals on full contour
-        normals = opt2d.compute_normals(contour_tensor).numpy()
+        normals = geometry.compute_normals(contour_tensor).numpy()
 
         N_points = len(contour)
         # Ensure we don't try to plot more lines than points

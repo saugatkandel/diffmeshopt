@@ -43,4 +43,6 @@ diffmeshopt = { path = ".", editable = true }
 setuptools = ">=80.10.1, <81"
 tensorboard = ">=2.20.0, <3"
 lightning = ">=2.6.0, <3"
+polars = ">=1.37.1, <2"
+rich = ">=14.2.0, <15"
 #pytorch3d = { git = "https://github.com/facebookresearch/pytorch3d.git" }

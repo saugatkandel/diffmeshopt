@@ -230,8 +230,9 @@ class ContourLoss(nn.Module):
         self.w_data = optimization_props.w_data
         self.w_laplacian = optimization_props.w_laplacian
         self.w_edge = optimization_props.w_edge
-        self.w_sigma_reg = getattr(optimization_props, "w_sigma_reg", 1.0)
-        self.w_template_shape = getattr(optimization_props, "w_template_shape", 0.1)
+        self.w_sigma_reg = optimization_props.w_sigma_reg
+        self.w_template_shape = optimization_props.w_template_shape
+        self.w_template_smooth = optimization_props.w_template_smooth
 
         self.data_loss_fn = BiGaussianLoss(template_props=template_props)
         self.laplacian_loss_fn = LaplacianSmoothingLoss(window_size=laplacian_window_size)
@@ -249,6 +250,7 @@ class ContourLoss(nn.Module):
         amp1: torch.Tensor | None = None,
         amp2: torch.Tensor | None = None,
         mask: torch.Tensor | None = None,
+        reg_losses: dict[str, torch.Tensor] | None = None,
     ) -> dict[str, torch.Tensor]:
         # Data Loss: Cross-correlation with template
         # If peak_dist/sigma are provided (from TemplateModel), they are used.
@@ -275,10 +277,30 @@ class ContourLoss(nn.Module):
             + self.w_template_shape * shape_loss
         )
 
-        return {
+        # Add regularization losses from TemplateModel
+        sigma_reg_loss = torch.tensor(0.0, device=profiles.device)
+        template_smooth_loss = torch.tensor(0.0, device=profiles.device)
+
+        if reg_losses is not None:
+            if "sigma_reg" in reg_losses:
+                sigma_reg_loss = reg_losses["sigma_reg"]
+                total_loss = total_loss + self.w_sigma_reg * sigma_reg_loss
+            if "template_smooth" in reg_losses:
+                template_smooth_loss = reg_losses["template_smooth"]
+                total_loss = total_loss + self.w_template_smooth * template_smooth_loss
+
+        results = {
             "total_loss": total_loss,
             "data_loss": self.w_data * data_loss,
             "laplacian_loss": self.w_laplacian * laplacian_loss,
             "edge_loss": self.w_edge * edge_loss,
             "shape_loss": self.w_template_shape * shape_loss,
         }
+
+        if reg_losses is not None:
+            if "sigma_reg" in reg_losses:
+                results["sigma_reg"] = self.w_sigma_reg * sigma_reg_loss
+            if "template_smooth" in reg_losses:
+                results["template_smooth"] = self.w_template_smooth * template_smooth_loss
+
+        return results
