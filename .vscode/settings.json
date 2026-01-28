@@ -1,10 +1,7 @@
 {
     "python.languageServer": "Pylance",
     "python.defaultInterpreterPath": "/workspace/diffmeshopt/.pixi/envs/default/bin/python",
-    "python-env.workspaceSearchPaths": [
-        "/workspace/diffmeshopt/.pixi/envs"
-    ],
-    "python.terminal.activateEnvInCurrentTerminal": true,
+    "python.terminal.activateEnvInCurrentTerminal": false,
     "editor.formatOnSave": true,
     "remote.defaultExtensionsIfInstalledLocally": [
         "GitHub.copilot",
@@ -34,10 +31,24 @@
         "**/node_modules",
         "**/__pycache__",
         "**/.*",
-        ".pixi",
-        ".venv",
-        "/workspace/diffmeshopt/data",
-        "/workspace/diffmeshopt/output",
-        "**/.pytest_cache"
-    ]
+        "**/data",
+        "**/output",
+    ],
+    // Stops Pylance from digging into the library code to find types
+    "python.analysis.useLibraryCodeForTypes": false,
+    // Reduces the depth of the "look ahead" analysis
+    "python.analysis.typeCheckingMode": "off",
+    "python.analysis.indexing": false,
+    "python.analysis.diagnosticMode": "openFilesOnly",
+    "python.analysis.userFileIndexingLimit": 500,
+    "files.watcherExclude": {
+        "**/.pixi/**": true,
+        "**/data/**": true,
+        "**/output/**": true
+    },
+    "python.envFile": "${workspaceFolder}/.env",
+    "python.analysis.extraPaths": [
+        "${workspaceFolder}"
+    ],
+    "python.analysis.persistAllIndices": false
 }

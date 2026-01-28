@@ -1,21 +1,25 @@
 import dataclasses as dt
 import logging
 import os
+import sys
 from pathlib import Path
 from typing import Any, Self
 
 import joblib
 import lightning.pytorch as pl_lightning
+import matplotlib
 import matplotlib.pyplot as plt
 import numpy as np
 import polars as pl
 import torch
 import torch.nn as nn
-from lightning.pytorch.callbacks import Callback, ModelCheckpoint, RichProgressBar
+from lightning.pytorch.callbacks import Callback, ModelCheckpoint, TQDMProgressBar
 from lightning.pytorch.loggers import Logger, TensorBoardLogger
 from lightning.pytorch.utilities import rank_zero_only
 from torch.utils.data import DataLoader
+from tqdm import tqdm
 
+torch.set_float32_matmul_precision("medium")
 # --- 1. DATA LAYER: Atomic Parquet Logger ---
 
 
@@ -138,10 +142,14 @@ class ContourLightningModule(pl_lightning.LightningModule):
         self.calc_chamfer = calc_chamfer
         self.calc_hausdorff = calc_hausdorff
         self.calc_p95 = calc_p95
+
+        self.gt_contour_ref = None
+        self.gt_distance_map = None
+
         self._setup_buffers()
 
     def _setup_buffers(self) -> None:
-        if self.gt_contour_raw is None:
+        if self.gt_contour_raw is None or len(self.gt_contour_raw) == 0:
             return
 
         # persistent=True: Small data (contour) goes into checkpoint
@@ -150,13 +158,14 @@ class ContourLightningModule(pl_lightning.LightningModule):
         )
 
         # persistent=False: Heavy data (distance map) stays in RAM, not on disk
+
         if self.image_shape_raw:
             from diffmeshopt.opt2d.evaluation import compute_gt_distance_map
 
             gt_distance_map = compute_gt_distance_map(self.gt_contour_raw, self.image_shape_raw)
+
             if gt_distance_map is not None:
                 self.register_buffer("gt_distance_map", gt_distance_map, persistent=False)
-            self.gt_distance_map = gt_distance_map
 
     def training_step(self, batch, batch_idx) -> torch.Tensor:
         losses = self.refiner.compute_losses()
@@ -172,7 +181,8 @@ class ContourLightningModule(pl_lightning.LightningModule):
 
         with torch.no_grad():
             curr = self.refiner.contour
-            if hasattr(self, "gt_distance_map"):
+
+            if self.gt_distance_map is not None:
                 metrics = compute_metrics_from_map(
                     curr,
                     self.gt_distance_map,
@@ -180,7 +190,7 @@ class ContourLightningModule(pl_lightning.LightningModule):
                     calc_hausdorff=self.calc_hausdorff,
                     calc_p95=self.calc_p95,
                 )
-            elif hasattr(self, "gt_contour_ref"):
+            elif self.gt_contour_ref is not None:
                 metrics = compute_contour_metrics(curr, self.gt_contour_ref)
             else:
                 metrics = {}
@@ -303,17 +313,23 @@ class ImageLoggerCallback(Callback):
         return fig
 
     def _plot_and_save(self, pl_module, step, trainer):
+        # matplotlib.use("Agg")
+        # import matplotlib.pyplot as plt
+
         fig = self.create_figure(pl_module)
         if fig is None:
             return
+        try:
+            for logger in trainer.loggers:
+                if isinstance(logger, TensorBoardLogger):
+                    logger.experiment.add_figure("vis", fig, global_step=step)
 
-        for logger in trainer.loggers:
-            if isinstance(logger, TensorBoardLogger):
-                logger.experiment.add_figure("vis", fig, global_step=step)
-
-        if self.save_images:
-            fig.savefig(self.vis_dir / f"step_{step:05d}.png", bbox_inches="tight")
-        plt.close(fig)
+            if self.save_images:
+                fig.savefig(self.vis_dir / f"step_{step:05d}.png", bbox_inches="tight")
+        finally:
+            fig.clf()
+            plt.close(fig)
+            del fig
 
 
 class StepWindowCallback(Callback):
@@ -333,6 +349,31 @@ class StepWindowCallback(Callback):
         # Stop if we have covered the requested distance
         if (trainer.global_step - self.offset) >= self.steps_to_run:
             trainer.should_stop = True
+
+
+class LiteTQDM(TQDMProgressBar):
+    """A text-only TQDM bar that avoids Jupyter widget deadlocks."""
+
+    def __init__(self, refresh_rate: int = 10) -> None:
+        super().__init__(refresh_rate=refresh_rate, process_position=0)
+
+    def init_train_tqdm(self) -> tqdm:
+        """Initializes the standard text-based tqdm bar."""
+        # Safety check for the starting index
+        start_idx = self.trainer.global_step if self.trainer else 0
+
+        return tqdm(
+            desc=self.train_description,
+            initial=start_idx,
+            position=(2 * self.process_position),
+            disable=self.is_disabled,
+            leave=False,
+            dynamic_ncols=False,
+            ncols=80,
+            ascii=True,
+            gui=False,
+            file=sys.stdout,
+        )
 
 
 # --- 4. ORCHESTRATION: Optimization Trainer ---
@@ -380,11 +421,12 @@ class OptimizationTrainer:
             accelerator="auto",
             devices=1,
             enable_model_summary=False,
+            enable_progress_bar=True,
         )
 
     def _setup_callbacks(self) -> list[Callback]:
         cbs = [
-            RichProgressBar(),
+            LiteTQDM(refresh_rate=10),
             ModelCheckpoint(
                 dirpath=self.output_dir,
                 save_last=True,
@@ -415,6 +457,7 @@ class OptimizationTrainer:
         """
         Runs exactly N steps. Automatically resumes if a checkpoint exists.
         """
+        logging.info(f"Starting fit for {steps_to_run} steps.")
         ckpt_path = self.output_dir / "last.ckpt"
         resume_path = str(ckpt_path) if ckpt_path.exists() else None
 
@@ -425,7 +468,7 @@ class OptimizationTrainer:
         self.trainer.should_stop = False
 
         # 2. Infinite data stream
-        loader = DataLoader(range(10_000_000), batch_size=None)
+        loader = DataLoader(range(10_000_000), batch_size=None, num_workers=0)
 
         try:
             self.trainer.fit(self.model, train_dataloaders=loader, ckpt_path=resume_path)
@@ -451,8 +494,9 @@ class OptimizationTrainer:
 
     def reset_refiner(self) -> None:
         """Resets the refiner to its initial state."""
-        if hasattr(self.refiner, "reset"):
-            self.refiner.reset()
+        reset_fn = getattr(self.refiner, "reset", None)
+        if reset_fn is not None:
+            reset_fn()
             logging.info("Refiner parameters reset to initialization state.")
         else:
             logging.warning("Refiner does not support reset().")
