@@ -14,7 +14,7 @@ We have implemented a 2D prototype for refining organelle segmentations using a 
 *   `diffmeshopt/opt2d/geometry.py`: Geometric utility functions.
 *   `diffmeshopt/opt2d/props.py`: Configuration data structures.
 *   `diffmeshopt/opt2d/vis.py`: Visualization utilities.
-*   `diffmeshopt/opt2d/trainer.py`: Encapsulates the optimization loop, logging (wandb), and checkpointing.
+*   `diffmeshopt/opt2d/trainer.py`: Encapsulates the optimization loop, logging (TensorBoard), and checkpointing.
 *   `diffmeshopt/opt2d/evaluation.py`: Geometric evaluation metrics.
 *   `notebooks/optimize_2d.ipynb`: Interactive optimization loop with visualization.
 *   `notebooks/train_2d.ipynb`: Training loop with TensorBoard visualization.
@@ -45,11 +45,13 @@ We have implemented a 2D prototype for refining organelle segmentations using a 
         - `GaussianSplatTemplateModel`: Parameters defined by a set of Gaussian RBFs (splats) in the image domain.
 - **Data Handling**:
     - Added `trim_data` to `generate_2d_data.py` to crop images around the segmentation.
+- **Refactoring**:
+    - Implemented `TemplateModelFactory` to clean up model instantiation.
 
 ## Validation Status
 - **Synthetic Data**: Basic functionality works, but recent changes (template models, masking) have not been rigorously verified.
 - **Real Data**: The new template models and B-Spline refiner have **not yet been tested** on real data.
-- **Tests**: Unit tests exist but are currently unstable/flaky. Integration tests need to be updated for the new return values (masks).
+- **Tests**: Major failures in loss and optimization tests. Investigation required.
 
 ## Design Decisions
 - **No Explicit Remeshing**: We avoid remeshing during the optimization loop to maintain differentiability. Instead, we rely on `EdgeLengthConsistencyLoss` and `LaplacianSmoothingLoss` to maintain mesh quality.
@@ -57,14 +59,13 @@ We have implemented a 2D prototype for refining organelle segmentations using a 
 - **Implicit Regularization**: We prefer B-Spline or Neural Field parameterizations for template parameters to enforce smoothness implicitly, rather than relying solely on explicit smoothness losses.
 
 ## In Progress / Next Steps
-1.  **2D Optimization Validation**: Run `ContourRefiner` on synthetic data using the notebook to confirm convergence.
-2.  **Test Stabilization**: Fix the failing/flaky test cases in `tests/opt2d/`.
-3.  **Refactoring**: Implement `TemplateModelFactory` to clean up model instantiation in `optimize.py`.
-4.  **Real Data Validation**: Run `BSplineContourRefiner` with `BSplineTemplateModel` on the real data slice (`data/20289/...`).
-5.  **Visualization**: Use the new visualization tools to inspect the learned template parameters on real data.
-6.  **Port to 3D**: (Paused until 2D is fully robust).
+1.  **Investigate Test Failures**: Debug and fix the failing loss and optimization tests.
+2.  **2D Optimization Validation**: Run `train_2d.ipynb` notebook to verify the full training loop on synthetic data.
+3.  **Real Data Validation**: Run `BSplineContourRefiner` with `BSplineTemplateModel` on the real data slice (`data/20289/...`).
+4.  **Visualization**: Use the new visualization tools to inspect the learned template parameters on real data.
+5.  **Port to 3D**: (Paused until 2D is fully robust).
 7.  **Evaluation & Training**:
-    - Added `OptimizationTrainer` for loop management and wandb integration.
+    - Added `OptimizationTrainer` for loop management and logging integration.
     - Added `compute_contour_metrics` for evaluation.
     - **Visualization**: Confirmed TensorBoard as the primary tool for local training monitoring (loss curves, contour evolution).
 

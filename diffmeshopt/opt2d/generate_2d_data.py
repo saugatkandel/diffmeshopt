@@ -1,3 +1,4 @@
+import logging
 from pathlib import Path
 
 import click
@@ -12,7 +13,7 @@ def generate_synthetic_data(shape=(256, 256), radius=60, center=(128, 128)):
     """
     Generates a synthetic 2D image with a bi-Gaussian membrane profile.
     """
-    print("Generating synthetic data...")
+    logging.info("Generating synthetic data...")
     image = np.zeros(shape, dtype=np.float32)
     y, x = np.ogrid[: shape[0], : shape[1]]
 
@@ -58,7 +59,7 @@ def load_real_data(path):
     Loads real data from pickle file.
     Expected content: Dictionary with keys "tomo_avg30A", "organelle", "membrane"
     """
-    print(f"Loading real data from {path}...")
+    logging.info(f"Loading real data from {path}...")
     data = joblib.load(path)
 
     tomo_slice = data["tomo_avg30A"]
@@ -91,7 +92,7 @@ def trim_data(image, contour, gt=None, margin=50):
     if margin <= 0 or contour is None:
         return image, contour, gt
 
-    print(f"Trimming image with margin {margin}...")
+    logging.info(f"Trimming image with margin {margin}...")
     # Contour is (N, 2) -> (row, col)
     min_row, min_col = np.floor(np.min(contour, axis=0)).astype(int)
     max_row, max_col = np.ceil(np.max(contour, axis=0)).astype(int)
@@ -140,6 +141,7 @@ def trim_data(image, contour, gt=None, margin=50):
     help="Margin in pixels to trim around the segmentation.",
 )
 def main(real_path, synthetic, visualize, output, trim_margin):
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
     output.parent.mkdir(parents=True, exist_ok=True)
 
     image = None
@@ -149,11 +151,11 @@ def main(real_path, synthetic, visualize, output, trim_margin):
     if not synthetic and real_path.exists():
         try:
             image, contour, gt = load_real_data(real_path)
-            print("Successfully loaded real data.")
+            logging.info("Successfully loaded real data.")
         except Exception as e:
-            print(f"Failed to load real data: {e}. Falling back to synthetic.")
+            logging.warning(f"Failed to load real data: {e}. Falling back to synthetic.")
     elif not synthetic:
-        print(f"Real data not found at {real_path}.")
+        logging.info(f"Real data not found at {real_path}.")
 
     if image is None:
         image, contour, gt = generate_synthetic_data()
@@ -162,13 +164,13 @@ def main(real_path, synthetic, visualize, output, trim_margin):
     image, contour, gt = trim_data(image, contour, gt, trim_margin)
 
     joblib.dump({"image": image, "contour": contour, "gt": gt}, output)
-    print(f"Data saved to {output}")
-    print(f"Image shape: {image.shape}")
-    print(f"Contour shape: {contour.shape}")
+    logging.info(f"Data saved to {output}")
+    logging.info(f"Image shape: {image.shape}")
+    logging.info(f"Contour shape: {contour.shape}")
 
     if visualize:
         vis_path = output.with_suffix(".png")
-        print(f"Saving visualization to {vis_path}...")
+        logging.info(f"Saving visualization to {vis_path}...")
         plt.figure(figsize=(10, 10))
         plt.imshow(image, cmap="gray")
         plt.plot(contour[:, 1], contour[:, 0], "r-", linewidth=2, label="Initial Contour")

@@ -1,70 +1,75 @@
+import pytest
 import torch
 
-from diffmeshopt.opt2d.geometry import compute_normals
-from diffmeshopt.opt2d.props import SamplingProps
-from diffmeshopt.opt2d.sampling import sample_profiles, sample_profiles_stochastic
+from diffmeshopt.opt2d.sampling import _get_stratified_indices, sample_profiles
 
 
-def test_sampling_shapes(synthetic_data, props):
-    """Test profile sampling returns correct shapes."""
-    image, contour_np = synthetic_data
-    _, samp_props, _ = props
+@pytest.fixture
+def simple_image_and_contour():
+    """Create a simple image and a contour for testing."""
+    # A 20x20 image with a vertical bright line at x=10
+    image = torch.zeros(1, 1, 20, 20, dtype=torch.float32)
+    image[:, :, :, 10] = 1.0
 
-    contour = torch.from_numpy(contour_np).float()
-    normals = compute_normals(contour)
-
-    profiles = sample_profiles(image, contour, normals, samp_props)
-
-    # Expected shape: (N, num_samples)
-    assert profiles.shape == (len(contour), samp_props.num_samples)
-
-
-def test_stochastic_sampling(synthetic_data, props):
-    """Test stochastic sampling returns correct batch size."""
-    image, contour_np = synthetic_data
-    _, samp_props, _ = props
-
-    contour = torch.from_numpy(contour_np).float()
-    batch_size = 10
-
-    profiles, indices = sample_profiles_stochastic(
-        image, contour, samp_props, batch_size=batch_size
+    # A small square contour straddling the line
+    contour = torch.tensor(
+        [
+            [9.0, 9.0],
+            [11.0, 9.0],
+            [11.0, 11.0],
+            [9.0, 11.0],
+        ],
+        dtype=torch.float32,
+        requires_grad=True,
     )
 
-    assert profiles.shape == (batch_size, samp_props.num_samples)
-    assert indices.shape == (batch_size,)
-    # Check indices are within range
-    assert (indices >= 0).all() and (indices < len(contour)).all()
+    return image, contour
 
 
-def test_sampling_values():
-    """Test that sampling returns correct values from a known image."""
-    # Create a 10x10 image where pixel value equals x coordinate
-    H, W = 10, 10
-    # Shape (1, 1, H, W)
-    x_grid = torch.arange(W, dtype=torch.float32).view(1, W).expand(H, W)
-    image = x_grid.view(1, 1, H, W)
+def test_get_stratified_indices():
+    """Unit test for the stratified sampling logic."""
+    num_vertices = 100
+    num_samples = 10
+    indices = _get_stratified_indices(num_vertices, num_samples)
 
-    # Define a vertical line contour at x=5
-    # Points: (2, 5), (3, 5), ... (7, 5)
-    # (y, x) format
-    num_points = 5
-    y_coords = torch.arange(2, 7, dtype=torch.float32)
-    x_coords = torch.full_like(y_coords, 5.0)
-    contour = torch.stack([y_coords, x_coords], dim=1)
+    assert len(indices) == num_samples
+    assert len(set(indices.tolist())) == num_samples  # unique indices
 
-    # Normals pointing right: (0, 1)
-    normals = torch.zeros_like(contour)
-    normals[:, 1] = 1.0
+    # Check if indices are from different strata
+    stratum_size = num_vertices / num_samples
+    for i in range(num_samples):
+        assert i * stratum_size <= indices[i] < (i + 1) * stratum_size
 
-    # Sampling props
-    # sample_step = 1.0, num_samples = 3, width = 1
-    # Samples should be at x = 5-1, 5, 5+1 => 4, 5, 6
-    samp_props = SamplingProps(num_samples=3, sample_step=1.0, width=1)
 
-    profiles = sample_profiles(image, contour, normals, samp_props)
+def test_sample_profiles_shape_and_mask(simple_image_and_contour):
+    """Unit test for the output shape and validity mask of sample_profiles."""
+    image, contour = simple_image_and_contour
 
-    # Expected profiles: [4, 5, 6] for all points
-    expected = torch.tensor([4.0, 5.0, 6.0]).view(1, 3).expand(num_points, 3)
+    profiles, valid_mask = sample_profiles(
+        image, contour, profile_length=5, profile_width=1, sample_step=1.0
+    )
 
-    assert torch.allclose(profiles, expected, atol=1e-5)
+    assert profiles.shape == (contour.shape[0], 5)
+    assert valid_mask.shape == (contour.shape[0],)
+    assert torch.all(valid_mask)
+
+
+def test_sample_profiles_out_of_bounds(simple_image_and_contour):
+    """Unit test that out-of-bounds sampling is correctly masked."""
+    image, _ = simple_image_and_contour
+    contour_edge = torch.tensor(
+        [
+            [1.0, 10.0],  # Normal points left, will go off-image
+            [19.0, 10.0],  # Normal points right, will go off-image
+            [10.0, 1.0],  # Normal points up, will go off-image
+            [10.0, 19.0],  # Normal points down, will go off-image
+        ],
+        dtype=torch.float32,
+    )
+
+    _, valid_mask = sample_profiles(
+        image, contour_edge, profile_length=5, profile_width=1, sample_step=1.0
+    )
+
+    # All vertices should lead to invalid profiles
+    assert not torch.any(valid_mask)

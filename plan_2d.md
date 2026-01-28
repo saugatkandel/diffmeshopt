@@ -50,7 +50,6 @@ This document outlines the strategy for implementing and testing the differentia
     *   Hausdorff Distance.
 *   **Trainer** (`diffmeshopt/opt2d/trainer.py`):
     *   `OptimizationTrainer` class to manage the loop.
-    *   `wandb` logging.
     *   `TensorBoard` logging (local alternative).
     *   Checkpointing via `joblib`.
 *   **Storage**:
@@ -66,7 +65,7 @@ This document outlines the strategy for implementing and testing the differentia
 *   **Validation**:
     *   Verify `BSplineContourRefiner` produces smooth curves without explicit Laplacian loss on vertices.
     *   Verify `NeuralFieldTemplateModel` recovers spatially varying width/amplitude.
-    *   **Fix Tests**: Ensure unit and integration tests pass reliably.
+    *   **Fix Tests**: Investigate and fix major failures in loss and optimization tests.
 
 ### Step 3: Real Data Evaluation (Pending)
 *   Load `data/20289/denoised/data_slice123.pkl`.

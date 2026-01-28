@@ -1,3 +1,5 @@
+import logging
+
 import numpy as np
 import torch
 import torch.nn.functional as F
@@ -46,7 +48,7 @@ def smooth_contour(
 
         return spl(u_new).T.astype(np.float32)
     except Exception as e:
-        print(f"Warning: Spline smoothing failed ({e}). Using raw contour.")
+        logging.warning(f"Spline smoothing failed ({e}). Using raw contour.")
         return contour_np
 
 

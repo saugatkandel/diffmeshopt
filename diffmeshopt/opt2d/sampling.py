@@ -1,26 +1,27 @@
+import numpy as np
 import torch
 import torch.nn.functional as F
 
 from diffmeshopt.opt2d.geometry import compute_normals
-from diffmeshopt.opt2d.props import SamplingProps
+
+
+def _convert_to_tensor(array: torch.Tensor | np.ndarray) -> torch.Tensor:
+    if isinstance(array, np.ndarray):
+        return torch.from_numpy(array).float()
+    return array
 
 
 def get_sampling_points(
     contour: torch.Tensor,
     normals: torch.Tensor,
-    sampling_props: SamplingProps | None = None,
+    num_samples: int,
+    sample_step: float,
+    width: int,
 ) -> torch.Tensor:
     """
     Generates the coordinates for sampling profiles.
     Returns tensor of shape (N, num_samples, width, 2) in (y, x) pixel coordinates.
     """
-    if sampling_props is None:
-        sampling_props = SamplingProps()
-
-    # N = contour.shape[0]
-    K = sampling_props.num_samples
-    sample_step = sampling_props.sample_step
-    width = sampling_props.width
 
     # Compute tangents from normals: (ny, nx) -> (nx, -ny)
     # normals is (y, x)
@@ -28,7 +29,8 @@ def get_sampling_points(
 
     # Offsets centered at 0. Using arange ensures step size is exactly sample_step.
     offsets = (
-        torch.arange(K, device=contour.device, dtype=torch.float32) - (K - 1) / 2
+        torch.arange(num_samples, device=contour.device, dtype=torch.float32)
+        - (num_samples - 1) / 2
     ) * sample_step
 
     # Tangent offsets for width averaging
@@ -85,16 +87,17 @@ def sample_at_points(image: torch.Tensor, points: torch.Tensor) -> torch.Tensor:
 def sample_profiles(
     image: torch.Tensor,
     contour: torch.Tensor,
-    normals: torch.Tensor,
-    sampling_props: SamplingProps | None = None,
+    profile_length: int,
+    profile_width: int,
+    sample_step: float = 1.0,
+    normals: torch.Tensor | None = None,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """
     Sample intensity profiles from the image along the normals.
     """
-    if sampling_props is None:
-        sampling_props = SamplingProps()
-
-    points = get_sampling_points(contour, normals, sampling_props)
+    if normals is None:
+        normals = compute_normals(contour)
+    points = get_sampling_points(contour, normals, profile_length, sample_step, profile_width)
     samples = sample_at_points(image, points)
 
     # Calculate validity mask
@@ -130,22 +133,20 @@ def _get_stratified_indices(
 
 
 def sample_profiles_stochastic(
-    image: torch.Tensor,
-    contour: torch.Tensor,
-    sampling_props: SamplingProps | None = None,
-    batch_size: int | None = None,
+    image: torch.Tensor | np.ndarray,
+    contour: torch.Tensor | np.ndarray,
+    profile_length: int,
+    profile_width: int,
+    sample_step: float,
+    num_samples: int,
     normals: torch.Tensor | None = None,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     """
     Samples profiles for a pseudo-uniformly distributed random subset of contour vertices.
     """
-    if sampling_props is None:
-        sampling_props = SamplingProps()
-
-    bs = batch_size if batch_size is not None else sampling_props.batch_size
 
     # 1. Select a subset of indices that are spaced out along the contour
-    sub_indices = _get_stratified_indices(contour.shape[0], bs, device=contour.device)
+    sub_indices = _get_stratified_indices(contour.shape[0], num_samples, device=contour.device)
 
     # 2. Create the coarse contour from the selected vertices
     coarse_contour = contour[sub_indices]
@@ -157,6 +158,8 @@ def sample_profiles_stochastic(
         coarse_normals = compute_normals(coarse_contour)
 
     # 4. Sample profiles at the locations of the coarse contour vertices using their normals
-    profiles, valid_mask = sample_profiles(image, coarse_contour, coarse_normals, sampling_props)
+    profiles, valid_mask = sample_profiles(
+        image, coarse_contour, profile_length, profile_width, sample_step, coarse_normals
+    )
 
     return profiles, sub_indices, valid_mask

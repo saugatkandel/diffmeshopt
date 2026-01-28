@@ -1,12 +1,19 @@
+import logging
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from diffmeshopt.opt2d.props import OptimizationProps, TemplateProps
+from diffmeshopt.opt2d.props import TemplateProps
 
 
 class BiGaussianLoss(nn.Module):
-    def __init__(self, template_props: TemplateProps | None = None):
+    def __init__(
+        self,
+        template_props: TemplateProps | None = None,
+        num_samples: int = 51,
+        sample_step: float = 1.0,
+    ):
         """
         peak_dist: Distance between the two Gaussian peaks in pixels.
         sigma: Sigma of each Gaussian (width parameter).
@@ -18,11 +25,14 @@ class BiGaussianLoss(nn.Module):
             template_props = TemplateProps()
         self.peak_dist = template_props.peak_dist
         self.sigma = template_props.sigma
-        self.profile_len = template_props.num_samples
+        self.profile_len = num_samples
 
         # Create template
         # Center is 0. Range is roughly [-profile_len/2, profile_len/2]
-        x = torch.arange(self.profile_len, dtype=torch.float32) - (self.profile_len - 1) / 2.0
+        # Scale by sample_step to ensure x is in pixels (physical units)
+        x = (
+            torch.arange(self.profile_len, dtype=torch.float32) - (self.profile_len - 1) / 2.0
+        ) * sample_step
 
         self.register_buffer("x", x)
         template = self.get_bigaussian_profile(x, self.peak_dist, self.sigma)
@@ -75,7 +85,7 @@ class BiGaussianLoss(nn.Module):
 
         # Normalize template so that correlation is 1.0 for perfect match
         t_mean = template.mean(dim=-1, keepdim=True)
-        t_std = template.std(dim=-1, keepdim=True)
+        t_std = template.std(dim=-1, keepdim=True, unbiased=False)
         template = (template - t_mean) / (t_std + 1e-8)
         return template
 
@@ -93,7 +103,7 @@ class BiGaussianLoss(nn.Module):
         # profiles: (N, K)
         # Normalize profiles
         mean = profiles.mean(dim=-1, keepdim=True)
-        std = profiles.std(dim=-1, keepdim=True)
+        std = profiles.std(dim=-1, keepdim=True, unbiased=False)
         profiles_norm = (profiles - mean) / (std + 1e-8)
 
         if peak_dist is not None:
@@ -126,7 +136,7 @@ class BiGaussianLoss(nn.Module):
 
 
 class LaplacianSmoothingLoss(nn.Module):
-    def __init__(self, window_size: int = 1):
+    def __init__(self, window_size: int = 3):
         super().__init__()
         self.window_size = window_size
 
@@ -213,28 +223,38 @@ class TemplateShapeLoss(nn.Module):
 
         mean_profile = profiles.mean(dim=0)
         mp_mean = mean_profile.mean()
-        mp_std = mean_profile.std()
+        mp_std = mean_profile.std(unbiased=False)
         mean_profile_norm = (mean_profile - mp_mean) / (mp_std + 1e-8)
 
-        return F.mse_loss(mean_profile_norm, template)
+        return F.mse_loss(mean_profile_norm.expand_as(template), template)
 
 
 class ContourLoss(nn.Module):
     def __init__(
         self,
-        optimization_props: OptimizationProps,
-        template_props: TemplateProps,
-        laplacian_window_size: int = 1,
+        data_loss_weight: float = 1.0,
+        laplacian_loss_weight: float = 1.0,
+        edge_length_loss_weight: float = 1.0,
+        sigma_reg_loss_weight: float = 1.0,
+        template_shape_loss_weight: float = 1.0,
+        template_smooth_loss_weight: float = 1.0,
+        template_props: TemplateProps | None = None,
+        num_samples: int = 51,
+        sample_step: float = 1.0,
+        laplacian_window_size: int = 3,
     ):
         super().__init__()
-        self.w_data = optimization_props.w_data
-        self.w_laplacian = optimization_props.w_laplacian
-        self.w_edge = optimization_props.w_edge
-        self.w_sigma_reg = optimization_props.w_sigma_reg
-        self.w_template_shape = optimization_props.w_template_shape
-        self.w_template_smooth = optimization_props.w_template_smooth
+        logging.info("Initializing ContourLoss")
+        self.w_data = data_loss_weight
+        self.w_laplacian = laplacian_loss_weight
+        self.w_edge = edge_length_loss_weight
+        self.w_sigma_reg = sigma_reg_loss_weight
+        self.w_template_shape = template_shape_loss_weight
+        self.w_template_smooth = template_smooth_loss_weight
 
-        self.data_loss_fn = BiGaussianLoss(template_props=template_props)
+        self.data_loss_fn = BiGaussianLoss(
+            template_props=template_props, num_samples=num_samples, sample_step=sample_step
+        )
         self.laplacian_loss_fn = LaplacianSmoothingLoss(window_size=laplacian_window_size)
         self.edge_loss_fn = EdgeLengthConsistencyLoss()
         self.shape_loss_fn = TemplateShapeLoss()

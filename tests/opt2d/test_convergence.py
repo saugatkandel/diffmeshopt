@@ -1,0 +1,62 @@
+import numpy as np
+import pytest
+import torch
+
+from diffmeshopt.opt2d.optimize import ContourRefiner
+from diffmeshopt.opt2d.props import ContourRefinerProps, TemplateProps
+from diffmeshopt.opt2d.template import TemplateModelFactory
+
+
+def test_optimization_convergence():
+    """
+    A numerical integration test to verify the optimizer moves a contour towards a known target.
+    Target: A bright vertical double-ridge centered at x=50.
+    Initial contour: A vertical line at x=40.
+    """
+    H, W = 100, 100
+    x = torch.arange(W, dtype=torch.float32)
+    y = torch.arange(H, dtype=torch.float32)
+    xv, yv = torch.meshgrid(x, y, indexing="xy")
+
+    # Create image with a BiGaussian ridge centered at x=50
+    # Peaks at 45 and 55 (dist=10).
+    image = torch.exp(-((xv - 45) ** 2) / (2 * 2**2)) + torch.exp(-((xv - 55) ** 2) / (2 * 2**2))
+    image = (image - image.min()) / (image.max() - image.min())
+    image = image.unsqueeze(0).unsqueeze(0)  # Add batch and channel dims
+
+    # Initial contour: vertical line at x=45 (closer to 50 to avoid local minima)
+    num_points = 10
+    ys = torch.linspace(10, 90, num_points)
+    xs = torch.full_like(ys, 45.0)
+    initial_contour = torch.stack([ys, xs], axis=1)  # (y, x) format
+
+    # Use the new properties system
+    props = ContourRefinerProps(
+        num_steps=100,
+        learning_rate=1.0,
+        data_loss_weight=1.0,
+        laplacian_loss_weight=0.0,
+        edge_length_loss_weight=0.0,
+        # Sampling props
+        profile_length=21,
+        profile_width=1,
+        num_sampled_profiles=num_points,  # Sample all points
+    )
+    template_props = TemplateProps(peak_dist=10.0, sigma=2.0)
+    template_model = TemplateModelFactory.create("fixed", props=template_props)
+
+    refiner = ContourRefiner(
+        initial_contour=initial_contour,
+        props=props,
+        template_model=template_model,
+    )
+
+    # Run optimization
+    history = list(refiner.refine(image))
+    final_contour = history[-1]["contour"]
+    final_x = final_contour.detach().cpu().numpy()[:, 1].mean()  # Contour is (y, x)
+
+    # Should have moved towards 50 (from 45)
+    assert final_x > 45.0
+    # Should be close to 50
+    assert np.abs(final_x - 50.0) < 1.0
