@@ -38,8 +38,8 @@
     "python.analysis.useLibraryCodeForTypes": false,
     // Reduces the depth of the "look ahead" analysis
     "python.analysis.typeCheckingMode": "off",
-    "python.analysis.indexing": false,
-    "python.analysis.diagnosticMode": "openFilesOnly",
+    "python.analysis.indexing": true,
+    "python.analysis.diagnosticMode": "workspace",
     "python.analysis.userFileIndexingLimit": 500,
     "files.watcherExclude": {
         "**/.pixi/**": true,

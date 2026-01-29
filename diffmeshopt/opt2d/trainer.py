@@ -127,6 +127,7 @@ class ContourLightningModule(pl_lightning.LightningModule):
     def __init__(
         self,
         refiner: nn.Module,
+        image: np.ndarray,
         gt_contour: np.ndarray | None = None,
         image_shape: tuple[int, int] | None = None,
         log_interval: int = 10,
@@ -136,6 +137,7 @@ class ContourLightningModule(pl_lightning.LightningModule):
     ):
         super().__init__()
         self.refiner = refiner
+        self.register_buffer("image_ref", torch.from_numpy(image).float(), persistent=False)
         self.log_interval = log_interval
         self.gt_contour_raw = gt_contour
         self.image_shape_raw = image_shape
@@ -168,7 +170,7 @@ class ContourLightningModule(pl_lightning.LightningModule):
                 self.register_buffer("gt_distance_map", gt_distance_map, persistent=False)
 
     def training_step(self, batch, batch_idx) -> torch.Tensor:
-        losses = self.refiner.compute_losses()
+        losses = self.refiner.compute_losses(self.image_ref)
         for k, v in losses.items():
             self.log(k, v, prog_bar=(k == "total_loss"), on_step=True, on_epoch=False)
 
@@ -401,6 +403,7 @@ class OptimizationTrainer:
 
         self.model = ContourLightningModule(
             refiner,
+            self.config.image,
             self.config.gt_contour,
             self.config.image.shape if self.config.image is not None else None,
             log_interval=self.config.log_interval,

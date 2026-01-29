@@ -7,31 +7,40 @@ import diffmeshopt.opt2d.geometry as geometry
 import diffmeshopt.opt2d.sampling as sampling
 from diffmeshopt.opt2d.geometry import get_bspline_matrix
 from diffmeshopt.opt2d.loss import BiGaussianLoss
-from diffmeshopt.opt2d.props import SamplingProps, TemplateProps
+from diffmeshopt.opt2d.props import ContourRefinerProps, TemplateProps
 
 
 def plot_prior_and_landscape_from_contour(
     image: np.ndarray,
     contour: np.ndarray,
-    sampling_props: SamplingProps | None = None,
+    refiner_props: ContourRefinerProps | None = None,
     template_props: TemplateProps | None = None,
 ):
     if template_props is None:
         template_props = TemplateProps()
 
-    if sampling_props is None:
-        sampling_props = SamplingProps()
+    if refiner_props is None:
+        refiner_props = ContourRefinerProps()
 
     sample_profiles, _, _ = sampling.sample_profiles_stochastic(
         torch.from_numpy(image).float(),
         torch.from_numpy(contour).float(),
-        sampling_props=sampling_props,
+        profile_length=refiner_props.profile_length,
+        profile_width=refiner_props.profile_width,
+        sample_step=refiner_props.sample_step,
+        num_samples=refiner_props.num_sampled_profiles,
     )
 
     sample_profiles = sample_profiles.detach().cpu().numpy()
 
+    # Compute x coordinates for plotting
+    num_samples = refiner_props.profile_length
+    step = refiner_props.sample_step
+    x = (np.arange(num_samples) - (num_samples - 1) / 2.0) * step
+
     plot_prior_and_landscape_from_profiles(
         sample_profiles,  # (N, L)
+        x=x,
         template_props=template_props,
     )
 
@@ -172,7 +181,7 @@ def plot_contour_normals(
     contour: np.ndarray,
     ax: Axes | None = None,
     stochastic: bool = True,
-    sampling_props: SamplingProps | None = None,
+    refiner_props: ContourRefinerProps | None = None,
 ) -> None:
     """
     Visualizes the contour and its normals on top of the image.
@@ -181,16 +190,15 @@ def plot_contour_normals(
     Args:
         image (np.array): 2D image array.
         contour (np.array): (N, 2) array of (row, col) coordinates.
-        profile_len (int): Length of the profile line to visualize centered at vertex.
-        num_lines (int): Number of normal lines to plot. If stochastic is True, this is the batch size.
         ax (matplotlib.axes.Axes): Optional axes.
         stochastic (bool): If True, use stochastic sampling for normals (simulating optimization step).
+        refiner_props (ContourRefinerProps): Props containing sampling configuration.
     """
-    if sampling_props is None:
-        sampling_props = SamplingProps()
+    if refiner_props is None:
+        refiner_props = ContourRefinerProps()
 
-    profile_len = sampling_props.num_samples
-    num_lines = sampling_props.batch_size
+    profile_len = refiner_props.profile_length
+    num_lines = refiner_props.num_sampled_profiles
 
     # Initialize figure
     show_plot = False
