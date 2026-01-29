@@ -60,6 +60,9 @@ def test_refiner_template_combinations(
         )
     elif "neural" in template_name:
         template_props = NeuralFieldTemplateProps(**template_props.__dict__, neural_hidden_dim=16)
+        # Neural fields can be sensitive to high learning rates in short tests
+        if hasattr(props, "learning_rate"):
+            props.learning_rate = 0.01
     elif "grid" in template_name:
         template_props = GridTemplateProps(**template_props.__dict__, grid_size=8)
     elif "splat" in template_name:

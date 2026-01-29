@@ -240,10 +240,9 @@ class PerPointTemplateModel(BaseTemplateModel):
 
     def get_regularization_loss(self) -> dict[str, torch.Tensor]:
         # Regularization: Gaussian prior on log(sigma) centered at initialization
-        prior = (self.log_sigma - self.sigma_init.log()).pow(2).mean() + (
-            self.log_sigma_ratio - self.sigma_ratio_init.log()
-        ).pow(2).mean()
-
+        prior = (self.log_sigma - self.sigma_init.log()).pow(2).mean()
+        if not self.props.symmetric:
+            prior = prior + (self.log_sigma_ratio - self.sigma_ratio_init.log()).pow(2).mean()
         # Reconstruct log_peak_dist for smoothness
         sigma = self.log_sigma.exp()
         peak_dist = sigma * (self.props.min_peak_ratio + self.log_excess.exp())

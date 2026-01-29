@@ -45,11 +45,12 @@ def test_laplacian_smoothing_loss(simple_contour):
     loss_for_grad.backward()
 
     assert perturbed_contour_grad.grad is not None
-    # The gradient for the perturbed point (p0) should point inwards, opposite to the perturbation.
+    # The gradient points in the direction of steepest ascent (increasing loss).
     # p0 was at (10, 0) and was moved to (12, 0).
-    # The gradient vector should be approximately in the (-1, 0) direction.
+    # Moving the point further out increases the Laplacian loss, so the gradient is positive (outwards).
+    # The gradient vector should be approximately in the (+1, 0) direction.
     grad_p0 = perturbed_contour_grad.grad[0]
-    assert grad_p0[0] < 0  # x-component should be negative
+    assert grad_p0[0] > 0  # x-component should be positive
     assert torch.isclose(grad_p0[1], torch.tensor(0.0), atol=1e-4)  # y-component should be ~0
 
 

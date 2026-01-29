@@ -64,7 +64,7 @@ def test_trainer_checkpointing(mock_refiner, temp_output_dir):
         (cb for cb in trainer.trainer.callbacks if isinstance(cb, ModelCheckpoint)), None
     )
     assert checkpoint_cb is not None
-    assert checkpoint_cb.dirpath == trainer.output_dir
+    assert Path(checkpoint_cb.dirpath) == trainer.output_dir
 
     # Check for saved files
     # The test doesn't actually run, so we can't check for files.

@@ -51,7 +51,7 @@ We have implemented a 2D prototype for refining organelle segmentations using a 
 ## Validation Status
 - **Synthetic Data**: Basic functionality works, but recent changes (template models, masking) have not been rigorously verified.
 - **Real Data**: The new template models and B-Spline refiner have **not yet been tested** on real data.
-- **Tests**: Major failures in loss and optimization tests. Investigation required.
+- **Tests**: Fixed 6 failing tests. The root causes were an incorrect gradient assertion in `test_loss`, a path type mismatch in `test_trainer`, a missing attribute access guard in `PerPointTemplateModel`, and an unstable learning rate for the `NeuralField` optimization test. All tests now pass.
 
 ## Design Decisions
 - **No Explicit Remeshing**: We avoid remeshing during the optimization loop to maintain differentiability. Instead, we rely on `EdgeLengthConsistencyLoss` and `LaplacianSmoothingLoss` to maintain mesh quality.
@@ -59,8 +59,7 @@ We have implemented a 2D prototype for refining organelle segmentations using a 
 - **Implicit Regularization**: We prefer B-Spline or Neural Field parameterizations for template parameters to enforce smoothness implicitly, rather than relying solely on explicit smoothness losses.
 
 ## In Progress / Next Steps
-1.  **Investigate Test Failures**: Debug and fix the failing loss and optimization tests.
-2.  **2D Optimization Validation**: Run `train_2d.ipynb` notebook to verify the full training loop on synthetic data.
+1.  **2D Optimization Validation**: Run `train_2d.ipynb` notebook to verify the full training loop on synthetic data with the various refiner and template combinations.
 3.  **Real Data Validation**: Run `BSplineContourRefiner` with `BSplineTemplateModel` on the real data slice (`data/20289/...`).
 4.  **Visualization**: Use the new visualization tools to inspect the learned template parameters on real data.
 5.  **Port to 3D**: (Paused until 2D is fully robust).
