@@ -7,26 +7,23 @@ on:
     branches: [ "main" ]
 
 jobs:
-  test:
+  pytest:
+    name: Run Pytest    
     runs-on: ubuntu-latest
 
     steps:
-    - uses: actions/checkout@v4
+    - name: Checkout code
+      uses: actions/checkout@v4
 
-    - name: Set up Python 3.12
-      uses: actions/setup-python@v5
+    - name: Set up Pixi
+      uses: prefix-dev/setup-pixi@v0.9.4
       with:
-        python-version: "3.12"
-
-    - name: Install dependencies
-      run: |
-        python -m pip install --upgrade pip
-        # Install CPU-only PyTorch to save download time and space
-        pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
-        
-        # Install the project dependencies (including test extras)
-        pip install ".[test]"
+        # This matches the [tool.pixi.environments] 'ci' key
+          activate-environment: ci
+          # Pixi uses your lockfile to ensure the exact same versions locally and in CI
+          frozen: true
+          cache: true
 
     - name: Run tests
       run: |
-        pytest tests/opt2d
+        pixi run -e ci pytest
