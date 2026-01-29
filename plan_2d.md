@@ -7,6 +7,7 @@ This document outlines the strategy for implementing and testing the differentia
 2.  **Debug Differentiable Sampling**: Verify that sampling image features at non-integer coordinates and backpropagating to vertex positions works correctly.
 3.  **Test Regularization**: Determine the balance between the data term (membrane fit) and geometric regularization (smoothness, edge length).
 4.  **Compare Template Models**: Evaluate the robustness of Fixed vs. B-Spline vs. Neural Field template parameterization.
+    *   Evaluate the trade-offs between explicit 1D contour models (B-Spline) and ambient 2D field models (Neural Field, etc.).
 
 ## 2. Synthetic Data Generation (`diffmeshopt/opt2d/generate_2d_data.py`)
 *   **Signal**: Bi-Gaussian membrane profile.
@@ -30,6 +31,8 @@ This document outlines the strategy for implementing and testing the differentia
 3.  **Template Model**:
     *   Predicts template parameters $\theta_i = (\sigma_i, d_i, A_i)$ for each point.
     *   **Models**: Fixed, Global, Per-Point, B-Spline (1D along contour), Neural Field (MLP on $x,y$), Grid (2D learnable map), Gaussian Splat (RBFs).
+        *   **1D Contour Models (e.g., B-Spline)**: Model parameters as a function of the contour's arc-length. This provides a strong inductive bias for properties that vary smoothly *along the membrane*.
+        *   **2D Ambient Field Models (e.g., Neural Field, Grid, Splat)**: Model parameters as a field in the image's coordinate space. The contour samples this field at its vertex locations. More general but less parameter-efficient and lacks an explicit contour-connectivity bias.
     *   **Factory**: `TemplateModelFactory` handles instantiation to decouple `optimize.py` from specific model classes.
 
 ## 4. Loss Functions (`diffmeshopt/opt2d/loss.py`)
@@ -54,6 +57,7 @@ This document outlines the strategy for implementing and testing the differentia
     *   Checkpointing via `joblib`.
 *   **Storage**:
     *   `ContourRefiner.export_state()` to save contour and parameters.
+*   **Combinatorial Testing**: Use `notebooks/compare_combinations.ipynb` to systematically evaluate different refiner and template model combinations.
 
 ## 6. Execution Plan
 

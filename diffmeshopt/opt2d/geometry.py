@@ -52,6 +52,37 @@ def smooth_contour(
         return contour_np
 
 
+def compute_cubic_bspline_weights(
+    u: torch.Tensor, num_cp: int
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """
+    Computes weights and indices for cubic B-spline interpolation.
+    u: Tensor of parameter values in [0, num_cp].
+    Returns:
+        indices: (..., 4) LongTensor of control point indices.
+        weights: (..., 4) FloatTensor of basis function values.
+    """
+    i = torch.floor(u).long()
+    t = u - i
+
+    # Cubic B-spline basis functions
+    b0 = (1 - t) ** 3 / 6
+    b1 = (3 * t**3 - 6 * t**2 + 4) / 6
+    b2 = (-3 * t**3 + 3 * t**2 + 3 * t + 1) / 6
+    b3 = t**3 / 6
+
+    # Indices of the 4 control points (wrapped)
+    idx_0 = (i - 1) % num_cp
+    idx_1 = i % num_cp
+    idx_2 = (i + 1) % num_cp
+    idx_3 = (i + 2) % num_cp
+
+    indices = torch.stack([idx_0, idx_1, idx_2, idx_3], dim=-1)
+    weights = torch.stack([b0, b1, b2, b3], dim=-1)
+
+    return indices, weights
+
+
 def get_bspline_matrix(
     num_cp: int, num_samples: int, device: torch.device = "cpu"
 ) -> torch.Tensor:
@@ -63,56 +94,38 @@ def get_bspline_matrix(
     # u runs from 0 to num_cp (periodic)
     u = torch.linspace(0, num_cp, num_samples + 1, device=device)[:-1]
 
-    # Indices of the control points
-    i = torch.floor(u).long()
-    t = u - i
-
-    # Cubic B-spline basis functions
-    b0 = (1 - t) ** 3 / 6
-    b1 = (3 * t**3 - 6 * t**2 + 4) / 6
-    b2 = (-3 * t**3 + 3 * t**2 + 3 * t + 1) / 6
-    b3 = t**3 / 6
+    indices, weights = compute_cubic_bspline_weights(u, num_cp)
 
     # Construct dense matrix
     M = torch.zeros(num_samples, num_cp, device=device)
-
-    # Handle wrapping indices for closed loop
-    idx_0 = (i - 1) % num_cp
-    idx_1 = i % num_cp
-    idx_2 = (i + 1) % num_cp
-    idx_3 = (i + 2) % num_cp
-
     rows = torch.arange(num_samples, device=device)
-    M[rows, idx_0] += b0
-    M[rows, idx_1] += b1
-    M[rows, idx_2] += b2
-    M[rows, idx_3] += b3
+
+    for k in range(4):
+        M[rows, indices[:, k]] += weights[:, k]
 
     return M
 
 
-def get_bspline_derivative_matrix(num_control_points: int, num_eval_points: int) -> torch.Tensor:
+def get_bspline_derivative_matrix(
+    num_control_points: int, num_eval_points: int, device: torch.device = "cpu"
+) -> torch.Tensor:
     """
     Constructs the matrix M such that M @ control_points = tangents.
     Assumes uniform cubic B-splines and closed loop.
     """
     # u runs from 0 to num_control_points
-    u = torch.linspace(0, num_control_points, num_eval_points + 1)[:-1]
+    u = torch.linspace(0, num_control_points, num_eval_points + 1, device=device)[:-1]
 
     i = torch.floor(u).long()
     t = u - i
 
     # Derivatives of cubic B-spline basis functions
-    # b0 = (1-t)^3/6 -> b0' = -0.5 * (1-t)^2
     db0 = -0.5 * (1 - t) ** 2
-    # b1 = (3t^3 - 6t^2 + 4)/6 -> b1' = 0.5 * (3t^2 - 4t)
     db1 = 0.5 * (3 * t**2 - 4 * t)
-    # b2 = (-3t^3 + 3t^2 + 3t + 1)/6 -> b2' = 0.5 * (-3t^2 + 2t + 1)
     db2 = 0.5 * (-3 * t**2 + 2 * t + 1)
-    # b3 = t^3/6 -> b3' = 0.5 * t^2
     db3 = 0.5 * t**2
 
-    M_deriv = torch.zeros((num_eval_points, num_control_points))
+    M_deriv = torch.zeros((num_eval_points, num_control_points), device=device)
 
     # Indices of the 4 control points (wrapped)
     idx_0 = (i - 1) % num_control_points
@@ -120,7 +133,7 @@ def get_bspline_derivative_matrix(num_control_points: int, num_eval_points: int)
     idx_2 = (i + 1) % num_control_points
     idx_3 = (i + 2) % num_control_points
 
-    rows = torch.arange(num_eval_points)
+    rows = torch.arange(num_eval_points, device=device)
 
     M_deriv[rows, idx_0] += db0
     M_deriv[rows, idx_1] += db1

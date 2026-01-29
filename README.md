@@ -1,8 +1,10 @@
-# Differentiable Mesh Optimization (2D Prototype) - VIBE CODING PROJECT>
+# Differentiable Mesh Optimization (2D Prototype)
 
 This project implements a differentiable optimization framework for refining 2D segmentation contours using a bi-Gaussian intensity prior. It is a prototype for a future 3D mesh refinement tool for cryo-ET segmentation.
 
-Note that this is $90%$ vibe-coded, with my providing high-level instructions.
+## A Vibe-Coding Project
+
+Note that this project is approximately 90% "vibe-coded," with a human providing high-level instructions and a coding assistant implementing the details.
 
 ## Project Structure
 
@@ -14,10 +16,17 @@ The core logic is located in `diffmeshopt/opt2d/`.
 *   `diffmeshopt/opt2d/sampling.py`: Handles differentiable image sampling along contour normals.
 *   `diffmeshopt/opt2d/generate_2d_data.py`: Scripts to generate synthetic data or load real cryo-ET slices.
 *   `diffmeshopt/opt2d/vis.py`: Visualization utilities.
+*   `diffmeshopt/opt2d/trainer.py`: Manages the training loop, logging, and checkpointing.
+
+## Project Documentation
+
+For a detailed breakdown of the project's design, goals, and current status, please see:
+*   **`plan_2d.md`**: Outlines the implementation and testing strategy for the 2D prototype.
+*   **`PROJECT_STATUS.md`**: A living document tracking the current state, design decisions, and next steps.
 
 ## Setup and Installation
 
-This project uses `pixi` for dependency management.
+This project uses `pixi` for dependency management, as defined in `pyproject.toml`. To set up the environment and install all dependencies (including the local package in editable mode), run:
 
 ```bash
 pixi install

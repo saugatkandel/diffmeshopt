@@ -191,18 +191,24 @@ class BSplineContourRefiner(ContourRefinerBase):
         )
 
         # Fit initial control points to the initial contour
-        M_init = get_bspline_matrix(num_control_points, len(initial_contour))
+        M_init = get_bspline_matrix(
+            num_control_points, len(initial_contour), device=initial_contour.device
+        )
         target = initial_contour.float()
         initial_cp = torch.linalg.lstsq(M_init, target).solution
         self.control_points = nn.Parameter(initial_cp)
 
         # Precompute evaluation and derivative matrices
         self.register_buffer(
-            "M_eval", get_bspline_matrix(num_control_points, num_eval_points), persistent=False
+            "M_eval",
+            get_bspline_matrix(num_control_points, num_eval_points, device=initial_contour.device),
+            persistent=False,
         )
         self.register_buffer(
             "M_deriv",
-            get_bspline_derivative_matrix(num_control_points, num_eval_points),
+            get_bspline_derivative_matrix(
+                num_control_points, num_eval_points, device=initial_contour.device
+            ),
             persistent=False,
         )
         self.capture_initial_state()

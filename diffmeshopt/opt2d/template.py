@@ -6,7 +6,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from diffmeshopt.opt2d.geometry import get_bspline_matrix
+from diffmeshopt.opt2d.geometry import compute_cubic_bspline_weights, get_bspline_matrix
 from diffmeshopt.opt2d.props import TemplateProps
 
 
@@ -138,8 +138,10 @@ class GlobalOptimizableTemplateModel(BaseTemplateModel):
 
         # Reparameterization: peak_dist = sigma * (2.0 + excess)
         # This enforces peak_dist > min_peak_ratio * sigma structurally.
-        init_ratio = props.peak_dist / props.sigma
-        init_excess = max(init_ratio - props.min_peak_ratio, 1e-6)
+        # New reparam: peak_dist = (sigma1+sigma2) * (min_peak_ratio/2 + excess)
+        sigma2_init = props.sigma * (1.0 if props.symmetric else props.sigma_ratio)
+        init_ratio = props.peak_dist / (props.sigma + sigma2_init)
+        init_excess = max(init_ratio - props.min_peak_ratio / 2.0, 1e-6)
         self.log_excess = nn.Parameter(torch.tensor(init_excess).log())
 
     def get_params(
@@ -147,21 +149,22 @@ class GlobalOptimizableTemplateModel(BaseTemplateModel):
         batch_indices: torch.Tensor | None = None,
         coordinates: torch.Tensor | None = None,
     ) -> dict[str, torch.Tensor]:
-        sigma = self.log_sigma.exp()
+        sigma1 = self.log_sigma.exp()
         excess = self.log_excess.exp()
-        peak_dist = sigma * (self.props.min_peak_ratio + excess)
 
         if self.props.symmetric:
-            sigma_ratio = torch.tensor(1.0, device=sigma.device)
-            amp_ratio = torch.tensor(1.0, device=sigma.device)
+            sigma2 = sigma1
+            amp_ratio = torch.tensor(1.0, device=sigma1.device)
         else:
-            sigma_ratio = self.log_sigma_ratio.exp()
+            sigma2 = sigma1 * self.log_sigma_ratio.exp()
             amp_ratio = self.log_amp_ratio.exp()
+
+        peak_dist = (sigma1 + sigma2) * (self.props.min_peak_ratio / 2.0 + excess)
 
         return {
             "peak_dist": peak_dist,
-            "sigma1": sigma,
-            "sigma2": sigma * sigma_ratio,
+            "sigma1": sigma1,
+            "sigma2": sigma2,
             "amp1": self.amp_init,
             "amp2": self.amp_init * amp_ratio,
         }
@@ -169,8 +172,12 @@ class GlobalOptimizableTemplateModel(BaseTemplateModel):
     def get_regularization_loss(self) -> dict[str, torch.Tensor]:
         # Weak prior to stay near initialization
         # Reconstruct log_peak_dist for the prior
-        sigma = self.log_sigma.exp()
-        peak_dist = sigma * (self.props.min_peak_ratio + self.log_excess.exp())
+        sigma1 = self.log_sigma.exp()
+        if self.props.symmetric:
+            sigma2 = sigma1
+        else:
+            sigma2 = sigma1 * self.log_sigma_ratio.exp()
+        peak_dist = (sigma1 + sigma2) * (self.props.min_peak_ratio / 2.0 + self.log_excess.exp())
         log_peak_dist = peak_dist.log()
 
         prior = (self.log_sigma - self.sigma_init.log()).pow(2) + (
@@ -200,8 +207,9 @@ class PerPointTemplateModel(BaseTemplateModel):
                 torch.full((num_points,), float(props.amp_ratio)).log()
             )
 
-        init_ratio = props.peak_dist / props.sigma
-        init_excess = max(init_ratio - props.min_peak_ratio, 1e-6)
+        sigma2_init = props.sigma * (1.0 if props.symmetric else props.sigma_ratio)
+        init_ratio = props.peak_dist / (props.sigma + sigma2_init)
+        init_excess = max(init_ratio - props.min_peak_ratio / 2.0, 1e-6)
         self.log_excess = nn.Parameter(torch.full((num_points,), init_excess).log())
 
     def get_params(
@@ -209,32 +217,33 @@ class PerPointTemplateModel(BaseTemplateModel):
         batch_indices: torch.Tensor | None = None,
         coordinates: torch.Tensor | None = None,
     ) -> dict[str, torch.Tensor]:
-        sigma = self.log_sigma.exp()
+        sigma1 = self.log_sigma.exp()
         excess = self.log_excess.exp()
-        peak_dist = sigma * (self.props.min_peak_ratio + excess)
 
         if self.props.symmetric:
-            sigma2 = sigma
-            amp2 = self.amp_init.expand_as(sigma)
+            sigma2 = sigma1
+            amp2 = self.amp_init.expand_as(sigma1)
         else:
             sigma_ratio = self.log_sigma_ratio.exp()
             amp_ratio = self.log_amp_ratio.exp()
-            sigma2 = sigma * sigma_ratio
+            sigma2 = sigma1 * sigma_ratio
             amp2 = self.amp_init * amp_ratio
+
+        peak_dist = (sigma1 + sigma2) * (self.props.min_peak_ratio / 2.0 + excess)
 
         if batch_indices is not None:
             return {
                 "peak_dist": peak_dist[batch_indices],
-                "sigma1": sigma[batch_indices],
+                "sigma1": sigma1[batch_indices],
                 "sigma2": sigma2[batch_indices],
-                "amp1": self.amp_init.expand_as(sigma)[batch_indices],
+                "amp1": self.amp_init.expand_as(sigma1)[batch_indices],
                 "amp2": amp2[batch_indices],
             }
         return {
             "peak_dist": peak_dist,
-            "sigma1": sigma,
+            "sigma1": sigma1,
             "sigma2": sigma2,
-            "amp1": self.amp_init.expand_as(sigma),
+            "amp1": self.amp_init.expand_as(sigma1),
             "amp2": amp2,
         }
 
@@ -244,8 +253,12 @@ class PerPointTemplateModel(BaseTemplateModel):
         if not self.props.symmetric:
             prior = prior + (self.log_sigma_ratio - self.sigma_ratio_init.log()).pow(2).mean()
         # Reconstruct log_peak_dist for smoothness
-        sigma = self.log_sigma.exp()
-        peak_dist = sigma * (self.props.min_peak_ratio + self.log_excess.exp())
+        sigma1 = self.log_sigma.exp()
+        if self.props.symmetric:
+            sigma2 = sigma1
+        else:
+            sigma2 = sigma1 * self.log_sigma_ratio.exp()
+        peak_dist = (sigma1 + sigma2) * (self.props.min_peak_ratio / 2.0 + self.log_excess.exp())
         log_peak_dist = peak_dist.log()
 
         # Smoothness: Penalize changes along the contour
@@ -274,17 +287,21 @@ class BSplineTemplateModel(BaseTemplateModel):
         # Factor is min_peak_ratio / 2.0 because we sum two sigmas
         init_ratio = props.peak_dist / (2 * props.sigma)  # Assuming sigma1=sigma2=sigma
         init_excess = max(init_ratio - props.min_peak_ratio / 2.0, 1e-6)
-        self.log_excess_cp = nn.Parameter(torch.full((self.num_cp,), init_excess).log())
+        # Vectorized control points
+        # Channels: excess, sigma1, amp1, [sigma2, amp2]
+        self.channel_names = ["excess", "sigma1", "amp1"]
+        init_vals = [init_excess, float(props.sigma), float(props.amp)]
 
-        self.log_sigma1_cp = nn.Parameter(torch.full((self.num_cp,), float(props.sigma)).log())
-        self.log_amp1_cp = nn.Parameter(torch.full((self.num_cp,), float(props.amp)).log())
         if not props.symmetric:
-            self.log_sigma2_cp = nn.Parameter(
-                torch.full((self.num_cp,), float(props.sigma * props.sigma_ratio)).log()
+            self.channel_names.extend(["sigma2", "amp2"])
+            init_vals.extend(
+                [float(props.sigma * props.sigma_ratio), float(props.amp * props.amp_ratio)]
             )
-            self.log_amp2_cp = nn.Parameter(
-                torch.full((self.num_cp,), float(props.amp * props.amp_ratio)).log()
-            )
+
+        init_tensor = (
+            torch.tensor(init_vals, dtype=torch.float32).unsqueeze(1).repeat(1, self.num_cp)
+        )
+        self.log_control_points = nn.Parameter(init_tensor.log())
 
     def get_params(
         self,
@@ -340,26 +357,21 @@ class BSplineTemplateModel(BaseTemplateModel):
 
     def _evaluate_spline(self, t: torch.Tensor) -> dict[str, torch.Tensor]:
         # t in [0, 1]
-        # Map to control point indices [0, num_cp]
-        x = t * self.num_cp
-        idx = x.long()
-        w = x - idx
+        # Map to B-spline parameter u in [0, num_cp]
+        u = t * self.num_cp
+        indices, weights = compute_cubic_bspline_weights(u, self.num_cp)
 
-        # Cyclic indices
-        idx0 = idx % self.num_cp
-        idx1 = (idx + 1) % self.num_cp
+        # Vectorized interpolation
+        # self.log_control_points: (C, num_cp)
+        p = self.log_control_points.exp()
 
-        def interp(param_cp):
-            return (1 - w) * param_cp[idx0].exp() + w * param_cp[idx1].exp()
+        # Gather values: (C, N, 4) using advanced indexing
+        p_gathered = p[:, indices]
 
-        res = {
-            "excess": interp(self.log_excess_cp),
-            "sigma1": interp(self.log_sigma1_cp),
-            "amp1": interp(self.log_amp1_cp),
-        }
-        if not self.props.symmetric:
-            res["sigma2"] = interp(self.log_sigma2_cp)
-            res["amp2"] = interp(self.log_amp2_cp)
+        # Weighted sum along the 4 control points
+        val = (p_gathered * weights.unsqueeze(0)).sum(dim=-1)  # (C, N)
+
+        res = {name: val[i] for i, name in enumerate(self.channel_names)}
         return res
 
     def get_regularization_loss(self) -> dict[str, torch.Tensor]:
@@ -369,19 +381,21 @@ class BSplineTemplateModel(BaseTemplateModel):
 
         sigma_ref = self.sigma_init.log()
 
+        # sigma1 is always at index 1
+        log_sigma1_cp = self.log_control_points[1]
+
         # Deviation from prior (Proximal term towards initialization)
-        reg_sigma = (self.log_sigma1_cp - sigma_ref).pow(2).mean()
+        reg_sigma = (log_sigma1_cp - sigma_ref).pow(2).mean()
 
         # Smoothness (first differences of control points)
         # This acts as a spatial regularizer
-        smooth_sigma = (self.log_sigma1_cp[1:] - self.log_sigma1_cp[:-1]).pow(2).mean()
+        smooth_sigma = (log_sigma1_cp[1:] - log_sigma1_cp[:-1]).pow(2).mean()
 
         if not self.props.symmetric:
             sigma2_ref = (self.sigma_init * self.sigma_ratio_init).log()
-            reg_sigma = reg_sigma + (self.log_sigma2_cp - sigma2_ref).pow(2).mean()
-            smooth_sigma = (
-                smooth_sigma + (self.log_sigma2_cp[1:] - self.log_sigma2_cp[:-1]).pow(2).mean()
-            )
+            log_sigma2_cp = self.log_control_points[3]
+            reg_sigma = reg_sigma + (log_sigma2_cp - sigma2_ref).pow(2).mean()
+            smooth_sigma = smooth_sigma + (log_sigma2_cp[1:] - log_sigma2_cp[:-1]).pow(2).mean()
 
         return {"sigma_reg": reg_sigma, "template_smooth": smooth_sigma}
 
