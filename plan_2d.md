@@ -70,6 +70,9 @@ This document outlines the strategy for implementing and testing the differentia
     *   Verify `BSplineContourRefiner` produces smooth curves without explicit Laplacian loss on vertices.
     *   Verify `NeuralFieldTemplateModel` recovers spatially varying width/amplitude.
     *   **Fix Tests**: Investigate and fix major failures in loss and optimization tests.
+    *   **Findings**:
+        *   `BSplineContourRefiner` tends to shrink contours due to regularization on control points.
+        *   Symmetric templates outperform asymmetric ones due to better centering constraints.
 
 ### Step 3: Real Data Evaluation (Pending)
 *   Load `data/20289/denoised/data_slice123.pkl`.

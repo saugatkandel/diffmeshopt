@@ -161,6 +161,33 @@ def compute_metrics_from_map(
     return metrics
 
 
+def compute_reference_free_metrics(contour: np.ndarray | torch.Tensor) -> dict[str, float]:
+    """
+    Computes metrics that do not require ground truth.
+    """
+    c = _to_numpy(contour)
+    if len(c) < 3:
+        return {}
+
+    # Edge lengths
+    diffs = c - np.roll(c, -1, axis=0)
+    lengths = np.linalg.norm(diffs, axis=1)
+
+    perimeter = np.sum(lengths)
+
+    # Roughness (Laplacian magnitude)
+    # v_i - 0.5 * (v_{i-1} + v_{i+1})
+    prev_c = np.roll(c, 1, axis=0)
+    next_c = np.roll(c, -1, axis=0)
+    laplacian = c - 0.5 * (prev_c + next_c)
+    roughness = np.mean(np.linalg.norm(laplacian, axis=1))
+
+    return {
+        "perimeter": float(perimeter),
+        "roughness": float(roughness),
+    }
+
+
 def compute_gt_distance_map(
     gt_contour: np.ndarray | torch.Tensor, image_shape: tuple[int, ...]
 ) -> torch.Tensor | None:

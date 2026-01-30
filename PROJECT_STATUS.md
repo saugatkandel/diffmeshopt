@@ -49,11 +49,18 @@ We have implemented a 2D prototype for refining organelle segmentations using a 
     - Added `trim_data` to `generate_2d_data.py` to crop images around the segmentation.
 - **Refactoring**:
     - Implemented `TemplateModelFactory` to clean up model instantiation.
+    - Enhanced `compare_combinations.ipynb` with detailed parameter visualization (line plots, bar charts) and quantitative metrics tables.
 
 ## Validation Status
 - **Synthetic Data**: Basic functionality works, but recent changes (template models, masking) have not been rigorously verified.
 - **Real Data**: The new template models and B-Spline refiner have **not yet been tested** on real data.
 - **Tests**: Fixed 6 failing tests. The root causes were an incorrect gradient assertion in `test_loss`, a path type mismatch in `test_trainer`, a missing attribute access guard in `PerPointTemplateModel`, and an unstable learning rate for the `NeuralField` optimization test. All tests now pass.
+
+## Experimental Results & Observations
+- **BSpline Refiner Shrinking**: The `BSplineContourRefiner` exhibits a tendency to shrink the contour more than the vertex-based refiner.
+    - *Speculation*: This is likely due to over-regularization. B-splines are inherently smooth; applying additional Laplacian and Edge Length penalties to the control points creates a strong shrinking force that may overpower the data term, especially if the image signal is weak.
+- **Symmetric vs. Asymmetry**: Symmetric template models (`sigma1=sigma2`, `amp1=amp2`) consistently perform better than asymmetric ones.
+    - *Speculation*: Asymmetric models introduce parameter ambiguity. The optimization can satisfy the loss by skewing the profile shape (e.g., making one side steeper) rather than moving the contour vertex to the true center. Symmetric models enforce a geometric centering constraint, providing a stronger gradient for positional alignment.
 
 ## Design Decisions
 - **No Explicit Remeshing**: We avoid remeshing during the optimization loop to maintain differentiability. Instead, we rely on `EdgeLengthConsistencyLoss` and `LaplacianSmoothingLoss` to maintain mesh quality.
