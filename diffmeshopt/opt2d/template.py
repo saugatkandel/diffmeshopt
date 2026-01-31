@@ -7,6 +7,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from diffmeshopt.opt2d.geometry import compute_cubic_bspline_weights, get_bspline_matrix
+from diffmeshopt.opt2d.loss import LaplacianSmoothingLoss
 from diffmeshopt.opt2d.props import TemplateProps
 
 
@@ -43,6 +44,11 @@ class TemplateModelFactory:
                 raise ValueError("num_vertices is required for PER_POINT mode")
             model = PerPointTemplateModel(num_vertices, props)
 
+        # Detect spatial dimension from image_shape
+        spatial_dim = 2
+        if image_shape is not None and len(image_shape) == 3:
+            spatial_dim = 3
+
         elif mode == TemplateMode.GLOBAL:
             model = GlobalOptimizableTemplateModel(props)
 
@@ -55,17 +61,17 @@ class TemplateModelFactory:
         elif mode == TemplateMode.NEURAL:
             if image_shape is None:
                 raise ValueError("image_shape (H, W) is required for NEURAL mode")
-            model = NeuralFieldTemplateModel(props, image_shape)
+            model = NeuralFieldTemplateModel(props, image_shape, spatial_dim=spatial_dim)
 
         elif mode == TemplateMode.GRID:
             if image_shape is None:
                 raise ValueError("image_shape (H, W) is required for GRID mode")
-            model = GridTemplateModel(props, image_shape)
+            model = GridTemplateModel(props, image_shape, spatial_dim=spatial_dim)
 
         elif mode == TemplateMode.SPLAT:
             if image_shape is None:
                 raise ValueError("image_shape (H, W) is required for SPLAT mode")
-            model = GaussianSplatTemplateModel(props, image_shape)
+            model = GaussianSplatTemplateModel(props, image_shape, spatial_dim=spatial_dim)
 
         if model is not None:
             model.mode = mode
@@ -94,7 +100,7 @@ class BaseTemplateModel(nn.Module, abc.ABC):
         coordinates: torch.Tensor | None = None,
     ) -> dict[str, torch.Tensor]:
         """
-        Returns a dictionary of parameters (peak_dist, sigma) for the given indices.
+        Returns a dictionary of parameters (peak_dist, sigma1, sigma2, amp1, amp2) for the given indices.
         coordinates: (N, 2) tensor of spatial positions (used for Neural Fields).
         If batch_indices is None, returns parameters for all points.
         """
@@ -102,6 +108,61 @@ class BaseTemplateModel(nn.Module, abc.ABC):
 
     def get_regularization_loss(self) -> dict[str, torch.Tensor]:
         return {}
+
+    def set_topology(self, edges: torch.Tensor | None) -> None:
+        """
+        Sets the connectivity for regularization (optional).
+        edges: (2, E) LongTensor of vertex indices.
+        """
+        pass
+
+    def _decode_log_residuals(self, residuals: torch.Tensor) -> dict[str, torch.Tensor]:
+        """
+        Decodes residuals added to log-space initialization values.
+        residuals: (N, C) tensor.
+        """
+        base_peak = self.peak_dist_init.log()
+        base_sigma = self.sigma_init.log()
+        base_amp = self.amp_init.log()
+
+        # Helper to enforce min_peak_ratio constraint
+        def enforce_separation(p_dist, s1, s2):
+            min_dist = (s1 + s2) * (self.props.min_peak_ratio / 2.0)
+            return torch.max(p_dist, min_dist)
+
+        if self.props.symmetric:
+            # residuals: [d_peak, d_s1, d_a1]
+            peak_dist = (base_peak + residuals[:, 0]).exp()
+            sigma1 = (base_sigma + residuals[:, 1]).exp()
+            sigma2 = sigma1  # Symmetric
+
+            peak_dist = enforce_separation(peak_dist, sigma1, sigma2)
+
+            return {
+                "peak_dist": peak_dist,
+                "sigma1": sigma1,
+                "sigma2": sigma2,
+                "amp1": (base_amp + residuals[:, 2]).exp(),
+                "amp2": (base_amp + residuals[:, 2]).exp(),
+            }
+        else:
+            # residuals: [d_peak, d_s1, d_s2, d_a1, d_a2]
+            base_sigma2 = (self.sigma_init * self.sigma_ratio_init).log()
+            base_amp2 = (self.amp_init * self.amp_ratio_init).log()
+
+            peak_dist = (base_peak + residuals[:, 0]).exp()
+            sigma1 = (base_sigma + residuals[:, 1]).exp()
+            sigma2 = (base_sigma2 + residuals[:, 2]).exp()
+
+            peak_dist = enforce_separation(peak_dist, sigma1, sigma2)
+
+            return {
+                "peak_dist": peak_dist,
+                "sigma1": sigma1,
+                "sigma2": sigma2,
+                "amp1": (base_amp + residuals[:, 3]).exp(),
+                "amp2": (base_amp2 + residuals[:, 4]).exp(),
+            }
 
 
 class FixedTemplateModel(BaseTemplateModel):
@@ -149,6 +210,10 @@ class GlobalOptimizableTemplateModel(BaseTemplateModel):
         batch_indices: torch.Tensor | None = None,
         coordinates: torch.Tensor | None = None,
     ) -> dict[str, torch.Tensor]:
+        if coordinates is not None and coordinates.shape[-1] == 3:
+            logging.warning_once(
+                "PerPointTemplateModel: 3D coordinates detected. Smoothness regularization assumes 1D ordering and may be invalid for meshes."
+            )
         sigma1 = self.log_sigma.exp()
         excess = self.log_excess.exp()
 
@@ -211,6 +276,16 @@ class PerPointTemplateModel(BaseTemplateModel):
         init_ratio = props.peak_dist / (props.sigma + sigma2_init)
         init_excess = max(init_ratio - props.min_peak_ratio / 2.0, 1e-6)
         self.log_excess = nn.Parameter(torch.full((num_points,), init_excess).log())
+        self.edges = None
+        # Use Laplacian loss for 2nd order smoothness (penalize curvature/kinks, not slope)
+        window_size = getattr(props, "smoothness_window_size", 1)
+        self.laplacian_loss_fn = LaplacianSmoothingLoss(window_size=window_size)
+
+    def set_topology(self, edges: torch.Tensor | None) -> None:
+        if edges is not None:
+            self.register_buffer("edges", edges, persistent=False)
+        else:
+            self.edges = None
 
     def get_params(
         self,
@@ -262,16 +337,31 @@ class PerPointTemplateModel(BaseTemplateModel):
         log_peak_dist = peak_dist.log()
 
         # Smoothness: Penalize changes along the contour
-        diff_sigma = self.log_sigma - torch.roll(self.log_sigma, shifts=1, dims=0)
-        diff_peak = log_peak_dist - torch.roll(log_peak_dist, shifts=1, dims=0)
-        smoothness = diff_sigma.pow(2).mean() + diff_peak.pow(2).mean()
+        if self.edges is not None:
+            # General graph smoothness (Dirichlet energy) for meshes
+            # edges: (2, E)
+            idx_u, idx_v = self.edges[0], self.edges[1]
 
-        if not self.props.symmetric:
-            diff_sigma_ratio = self.log_sigma_ratio - torch.roll(
-                self.log_sigma_ratio, shifts=1, dims=0
-            )
-            diff_amp_ratio = self.log_amp_ratio - torch.roll(self.log_amp_ratio, shifts=1, dims=0)
-            smoothness = smoothness + diff_sigma_ratio.pow(2).mean() + diff_amp_ratio.pow(2).mean()
+            diff_sigma = self.log_sigma[idx_u] - self.log_sigma[idx_v]
+            diff_peak = log_peak_dist[idx_u] - log_peak_dist[idx_v]
+            smoothness = diff_sigma.pow(2).mean() + diff_peak.pow(2).mean()
+
+            if not self.props.symmetric:
+                diff_sigma_ratio = self.log_sigma_ratio[idx_u] - self.log_sigma_ratio[idx_v]
+                diff_amp_ratio = self.log_amp_ratio[idx_u] - self.log_amp_ratio[idx_v]
+                smoothness = (
+                    smoothness + diff_sigma_ratio.pow(2).mean() + diff_amp_ratio.pow(2).mean()
+                )
+        else:
+            # 1D Contour smoothness using Laplacian (2nd order)
+            # Stack parameters into (N, C)
+            params_list = [self.log_sigma, log_peak_dist]
+            if not self.props.symmetric:
+                params_list.extend([self.log_sigma_ratio, self.log_amp_ratio])
+
+            # (N, C)
+            params_stacked = torch.stack(params_list, dim=1)
+            smoothness = self.laplacian_loss_fn(params_stacked)
 
         return {"sigma_reg": prior, "template_smooth": smoothness}
 
@@ -401,15 +491,16 @@ class BSplineTemplateModel(BaseTemplateModel):
 
 
 class NeuralFieldTemplateModel(BaseTemplateModel):
-    def __init__(self, props: TemplateProps, image_shape: tuple[int, int]):
+    def __init__(self, props: TemplateProps, image_shape: tuple, spatial_dim: int = 2):
         super().__init__(props)
         # Coordinate-based MLP: (x, y) -> (peak_dist, sigma1, sigma2, amp1, amp2)
         self.image_shape = image_shape
+        self.spatial_dim = spatial_dim
         layers = []
         hidden_dim = getattr(props, "neural_hidden_dim", 32)
         num_layers = getattr(props, "neural_num_layers", 2)
 
-        in_dim = 2
+        in_dim = spatial_dim
         for _ in range(num_layers):
             layers.append(nn.Linear(in_dim, hidden_dim))
             layers.append(nn.ReLU())
@@ -438,52 +529,37 @@ class NeuralFieldTemplateModel(BaseTemplateModel):
         if batch_indices is not None:
             coords_to_eval = coords_to_eval[batch_indices]
 
-        # Normalize coordinates to [-1, 1] for MLP stability
-        H, W = self.image_shape
-        # coordinates are (y, x)
-        norm_x = (coords_to_eval[:, 1] / (W - 1)) * 2 - 1
-        norm_y = (coords_to_eval[:, 0] / (H - 1)) * 2 - 1
-        norm_coords = torch.stack([norm_x, norm_y], dim=-1)
+        # Normalize coordinates to [-1, 1]
+        # coordinates are (y, x) or (z, y, x)
+        norm_coords = coords_to_eval.clone()
+        for d in range(self.spatial_dim):
+            # image_shape is (H, W) or (D, H, W)
+            # coords are (y, x) or (z, y, x)
+            # This matches if we assume standard indexing order
+            size = self.image_shape[d]
+            norm_coords[:, d] = (coords_to_eval[:, d] / (size - 1)) * 2 - 1
+
+        # MLP expects features in last dim, which is already the case
 
         out = self.head(self.net(norm_coords))
 
-        # Base values in log space
-        base_peak = self.peak_dist_init.log()
-        base_sigma = self.sigma_init.log()
-        base_amp = self.amp_init.log()
-
-        # Apply learned residuals in log space (ensures positivity)
-        if self.props.symmetric:
-            # out: [d_peak, d_s1, d_a1]
-            return {
-                "peak_dist": (base_peak + out[:, 0]).exp(),
-                "sigma1": (base_sigma + out[:, 1]).exp(),
-                "sigma2": (base_sigma + out[:, 1]).exp(),
-                "amp1": (base_amp + out[:, 2]).exp(),
-                "amp2": (base_amp + out[:, 2]).exp(),
-            }
-        else:
-            # out: [d_peak, d_s1, d_s2, d_a1, d_a2]
-            base_sigma2 = (self.sigma_init * self.sigma_ratio_init).log()
-            base_amp2 = (self.amp_init * self.amp_ratio_init).log()
-            return {
-                "peak_dist": (base_peak + out[:, 0]).exp(),
-                "sigma1": (base_sigma + out[:, 1]).exp(),
-                "sigma2": (base_sigma2 + out[:, 2]).exp(),
-                "amp1": (base_amp + out[:, 3]).exp(),
-                "amp2": (base_amp2 + out[:, 4]).exp(),
-            }
+        return self._decode_log_residuals(out)
 
 
 class GridTemplateModel(BaseTemplateModel):
-    def __init__(self, props: TemplateProps, image_shape: tuple[int, int]):
+    def __init__(self, props: TemplateProps, image_shape: tuple, spatial_dim: int = 2):
         super().__init__(props)
         self.image_shape = image_shape
+        self.spatial_dim = spatial_dim
         # Learnable grid: (1, 5, H, W)
         grid_size = getattr(props, "grid_size", 32)
         # Channels: peak_dist, sigma1, [sigma2], amp1, [amp2]
         num_channels = 3 if props.symmetric else 5
-        self.grid = nn.Parameter(torch.zeros(1, num_channels, grid_size, grid_size))
+
+        if spatial_dim == 3:
+            self.grid = nn.Parameter(torch.zeros(1, num_channels, grid_size, grid_size, grid_size))
+        else:
+            self.grid = nn.Parameter(torch.zeros(1, num_channels, grid_size, grid_size))
 
     def get_params(
         self,
@@ -497,51 +573,43 @@ class GridTemplateModel(BaseTemplateModel):
         if batch_indices is not None:
             coords_detached = coords_detached[batch_indices]
 
-        # Normalize coordinates to [-1, 1] for grid_sample
-        # coordinates are (y, x) in pixels
-        H, W = self.image_shape
-        norm_x = (coords_detached[:, 1] / (W - 1)) * 2 - 1
-        norm_y = (coords_detached[:, 0] / (H - 1)) * 2 - 1
-        grid_coords = torch.stack([norm_x, norm_y], dim=-1).view(1, 1, -1, 2)
+        # Normalize coordinates to [-1, 1]
+        # grid_sample expects (x, y, z) order (last dim is x)
+        # coordinates are (y, x) or (z, y, x)
+
+        norm_coords_list = []
+        # Iterate backwards to map (z, y, x) -> (x, y, z)
+        for d in reversed(range(self.spatial_dim)):
+            size = self.image_shape[d]
+            norm_val = (coords_detached[:, d] / (size - 1)) * 2 - 1
+            norm_coords_list.append(norm_val)
+
+        grid_coords = torch.stack(norm_coords_list, dim=-1)
+
+        # Reshape for grid_sample:
+        # 2D: (1, 1, N, 2)
+        # 3D: (1, 1, 1, N, 3)
+        view_shape = [1] * (self.spatial_dim) + [-1, self.spatial_dim]
+        grid_coords = grid_coords.view(*view_shape)
 
         # Sample from grid
         num_channels = 3 if self.props.symmetric else 5
         out = F.grid_sample(self.grid, grid_coords, align_corners=True).view(num_channels, -1).T
 
-        # Apply residuals to base values
-        base_peak = self.peak_dist_init.log()
-        base_sigma = self.sigma_init.log()
-        base_amp = self.amp_init.log()
-
-        if self.props.symmetric:
-            return {
-                "peak_dist": (base_peak + out[:, 0]).exp(),
-                "sigma1": (base_sigma + out[:, 1]).exp(),
-                "sigma2": (base_sigma + out[:, 1]).exp(),
-                "amp1": (base_amp + out[:, 2]).exp(),
-                "amp2": (base_amp + out[:, 2]).exp(),
-            }
-        else:
-            base_sigma2 = (self.sigma_init * self.sigma_ratio_init).log()
-            base_amp2 = (self.amp_init * self.amp_ratio_init).log()
-            return {
-                "peak_dist": (base_peak + out[:, 0]).exp(),
-                "sigma1": (base_sigma + out[:, 1]).exp(),
-                "sigma2": (base_sigma2 + out[:, 2]).exp(),
-                "amp1": (base_amp + out[:, 3]).exp(),
-                "amp2": (base_amp2 + out[:, 4]).exp(),
-            }
+        return self._decode_log_residuals(out)
 
 
 class GaussianSplatTemplateModel(BaseTemplateModel):
-    def __init__(self, props: TemplateProps, image_shape: tuple[int, int]):
+    def __init__(self, props: TemplateProps, image_shape: tuple, spatial_dim: int = 2):
         super().__init__(props)
         self.image_shape = image_shape
+        self.spatial_dim = spatial_dim
         num_splats = getattr(props, "splat_num_splats", 32)
-        H, W = image_shape
+
+        shape_tensor = torch.tensor(image_shape, dtype=torch.float32)
 
         # Initialize splats randomly in the image domain
-        self.centers = nn.Parameter(torch.rand(num_splats, 2) * torch.tensor([H, W]))
+        self.centers = nn.Parameter(torch.rand(num_splats, spatial_dim) * shape_tensor)
         # Splat influence radius (inverse scale)
         self.log_radius = nn.Parameter(torch.ones(num_splats) * 3.0)
         # Parameter payloads (residuals)
@@ -572,25 +640,4 @@ class GaussianSplatTemplateModel(BaseTemplateModel):
         # Interpolate payloads
         out = weights @ self.payloads  # (B, 5)
 
-        base_peak = self.peak_dist_init.log()
-        base_sigma = self.sigma_init.log()
-        base_amp = self.amp_init.log()
-
-        if self.props.symmetric:
-            return {
-                "peak_dist": (base_peak + out[:, 0]).exp(),
-                "sigma1": (base_sigma + out[:, 1]).exp(),
-                "sigma2": (base_sigma + out[:, 1]).exp(),
-                "amp1": (base_amp + out[:, 2]).exp(),
-                "amp2": (base_amp + out[:, 2]).exp(),
-            }
-        else:
-            base_sigma2 = (self.sigma_init * self.sigma_ratio_init).log()
-            base_amp2 = (self.amp_init * self.amp_ratio_init).log()
-            return {
-                "peak_dist": (base_peak + out[:, 0]).exp(),
-                "sigma1": (base_sigma + out[:, 1]).exp(),
-                "sigma2": (base_sigma2 + out[:, 2]).exp(),
-                "amp1": (base_amp + out[:, 3]).exp(),
-                "amp2": (base_amp2 + out[:, 4]).exp(),
-            }
+        return self._decode_log_residuals(out)

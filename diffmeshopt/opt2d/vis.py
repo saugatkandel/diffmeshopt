@@ -57,8 +57,7 @@ def plot_prior_and_landscape_from_profiles(
     Args:
         x (np.array): 1D coordinates along the normal vector.
         profiles (np.array or torch.Tensor): Batch of 1D intensity profiles.
-        peak_dist (float): Distance between peaks.
-        sigma (float): Width of peaks.
+            template_props (TemplateProps): Properties for the template (peak_dist, sigma).
     """
     if template_props is None:
         template_props = TemplateProps()

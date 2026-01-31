@@ -1,10 +1,12 @@
 import pytest
 import torch
+import torch.nn.functional as F
 
 from diffmeshopt.opt2d.loss import (
     BiGaussianLoss,
     EdgeLengthConsistencyLoss,
     LaplacianSmoothingLoss,
+    NormalConsistencyLoss,
     TemplateProps,
 )
 
@@ -54,6 +56,41 @@ def test_laplacian_smoothing_loss(simple_contour):
     assert torch.isclose(grad_p0[1], torch.tensor(0.0), atol=1e-4)  # y-component should be ~0
 
 
+def test_tangential_laplacian_loss(simple_contour):
+    """Test that tangential Laplacian loss penalizes bunching but not scaling."""
+    loss_fn = LaplacianSmoothingLoss(window_size=1, mode="tangential")
+
+    # Compute normals for the circle (pointing outwards)
+    # For a circle centered at 0, normal is just normalized position
+    normals = F.normalize(simple_contour, dim=-1)
+
+    # 1. Perfect circle with uniform spacing -> Tangential Laplacian should be 0
+    # (The Laplacian vector is purely radial, so projection onto tangent is 0)
+    loss_uniform = loss_fn(simple_contour, normals=normals)
+    assert torch.isclose(loss_uniform, torch.tensor(0.0), atol=1e-5)
+
+    # 2. Radial expansion (Scaling) -> Should NOT increase tangential loss
+    # Standard Laplacian loss would increase here, but tangential should not.
+    scaled_contour = simple_contour * 1.5
+    loss_scaled = loss_fn(scaled_contour, normals=normals)
+    assert torch.isclose(loss_scaled, torch.tensor(0.0), atol=1e-5)
+
+    # 3. Tangential perturbation (Bunching) -> Should increase loss
+    bunched_contour = simple_contour.clone()
+    # Move point 1 towards point 0 along the circle
+    with torch.no_grad():
+        # Interpolate between p0 and p1
+        new_p1 = simple_contour[0] * 0.2 + simple_contour[1] * 0.8
+        # Project back to radius 10 to ensure we only changed spacing, not shape
+        bunched_contour[1] = F.normalize(new_p1, dim=0) * 10.0
+
+    # We need to recompute normals for the bunched contour if we want to be exact,
+    # but using the original radial normals is fine for testing the projection logic
+    # on the vertices.
+    loss_bunched = loss_fn(bunched_contour, normals=normals)
+    assert loss_bunched > loss_uniform
+
+
 def test_edge_length_consistency_loss(simple_contour):
     """Test that edge length loss penalizes variance in edge lengths."""
     loss_fn = EdgeLengthConsistencyLoss()
@@ -69,6 +106,28 @@ def test_edge_length_consistency_loss(simple_contour):
 
     loss_non_uniform = loss_fn(non_uniform_contour)
     assert loss_non_uniform > loss
+
+
+def test_normal_consistency_loss():
+    """Test that normal consistency loss penalizes angle variations."""
+    loss_fn = NormalConsistencyLoss()
+
+    # 1. Flat line (normals all [0, 1]) -> Loss should be 0
+    normals_flat = torch.tensor([[0.0, 1.0]] * 10)
+    loss_flat = loss_fn(normals_flat)
+    assert torch.isclose(loss_flat, torch.tensor(0.0))
+
+    # 2. Circle (normals rotate slowly) -> Loss small but > 0
+    theta = torch.linspace(0, 2 * torch.pi, 11)[:-1]
+    normals_circle = torch.stack([torch.cos(theta), torch.sin(theta)], dim=1)
+    loss_circle = loss_fn(normals_circle)
+    assert loss_circle > 0
+
+    # 3. ZigZag (normals flip 180 deg) -> Loss high
+    normals_zigzag = torch.tensor([[0.0, 1.0], [0.0, -1.0]] * 5)
+    loss_zigzag = loss_fn(normals_zigzag)
+    # Dot product is -1, so 1 - (-1) = 2
+    assert torch.isclose(loss_zigzag, torch.tensor(2.0))
 
 
 def test_bigaussian_loss():
@@ -96,3 +155,52 @@ def test_bigaussian_loss():
     # Case 3: Anti-correlated -> loss should be 2
     loss_anti_corr = loss_fn(-template_profile.clone())
     assert torch.isclose(loss_anti_corr, torch.tensor(2.0), atol=1e-6)
+
+
+def test_laplacian_smoothing_loss_with_edges():
+    """Test Graph Laplacian calculation with explicit edges."""
+    # 3 points in a line: p0=(-1,0), p1=(0,0), p2=(1,0)
+    points = torch.tensor([[-1.0, 0.0], [0.0, 0.0], [1.0, 0.0]])
+
+    # Bidirectional edges: 0<->1, 1<->2
+    # Note: LaplacianSmoothingLoss uses index_add_, so we define directed edges for neighbors
+    edges = torch.tensor([[0, 1, 1, 2], [1, 0, 2, 1]], dtype=torch.long)
+
+    loss_fn = LaplacianSmoothingLoss()
+
+    # L[0] = p0 - p1 = (-1, 0) -> norm sq = 1
+    # L[1] = p1 - (p0+p2)/2 = 0 - 0 = 0 -> norm sq = 0
+    # L[2] = p2 - p1 = (1, 0) -> norm sq = 1
+    # Mean loss = (1 + 0 + 1) / 3 = 2/3
+
+    loss = loss_fn(points, edges=edges)
+    assert torch.isclose(loss, torch.tensor(2.0 / 3.0))
+
+
+def test_edge_length_consistency_loss_with_edges():
+    """Test edge length loss with explicit edges (Graph mode)."""
+    # Triangle: (0,0), (3,0), (0,4). Edges lengths: 3, 5, 4.
+    points = torch.tensor([[0.0, 0.0], [3.0, 0.0], [0.0, 4.0]])
+    # Edges: 0->1, 1->2, 2->0
+    edges = torch.tensor([[0, 1, 2], [1, 2, 0]], dtype=torch.long)
+
+    loss_fn = EdgeLengthConsistencyLoss()
+    loss = loss_fn(points, edges=edges)
+
+    lengths = torch.tensor([3.0, 5.0, 4.0])
+    mean_l = lengths.mean()
+    expected_loss = ((lengths - mean_l) ** 2).mean() / (mean_l**2 + 1e-8)
+
+    assert torch.isclose(loss, expected_loss)
+
+
+def test_normal_consistency_loss_with_edges():
+    """Test normal consistency loss with explicit edges."""
+    # Two normals pointing in opposite directions
+    normals = torch.tensor([[1.0, 0.0], [-1.0, 0.0]])
+    edges = torch.tensor([[0], [1]], dtype=torch.long)  # Edge 0->1
+
+    loss_fn = NormalConsistencyLoss()
+    loss = loss_fn(normals, edges=edges)
+    # Dot product is -1. Loss = 1 - (-1) = 2.
+    assert torch.isclose(loss, torch.tensor(2.0))

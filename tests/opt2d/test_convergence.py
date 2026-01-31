@@ -2,7 +2,7 @@ import numpy as np
 import pytest
 import torch
 
-from diffmeshopt.opt2d.optimize import ContourRefiner
+from diffmeshopt.opt2d.optimize import ContourRefiner, GradientSurgeryContourRefiner
 from diffmeshopt.opt2d.props import ContourRefinerProps, TemplateProps
 from diffmeshopt.opt2d.template import TemplateModelFactory
 
@@ -59,4 +59,44 @@ def test_optimization_convergence():
     # Should have moved towards 50 (from 45)
     assert final_x > 45.0
     # Should be close to 50
+    assert np.abs(final_x - 50.0) < 1.0
+
+
+def test_gradient_surgery_convergence():
+    """
+    Verify GradientSurgeryRefiner converges to a target.
+    """
+    H, W = 100, 100
+    x = torch.arange(W, dtype=torch.float32)
+    y = torch.arange(H, dtype=torch.float32)
+    xv, yv = torch.meshgrid(x, y, indexing="xy")
+
+    # Create image with a BiGaussian ridge centered at x=50
+    image = torch.exp(-((xv - 45) ** 2) / (2 * 2**2)) + torch.exp(-((xv - 55) ** 2) / (2 * 2**2))
+    image = (image - image.min()) / (image.max() - image.min())
+    image = image.unsqueeze(0).unsqueeze(0)
+
+    # Initial contour: vertical line at x=45
+    num_points = 10
+    ys = torch.linspace(10, 90, num_points)
+    xs = torch.full_like(ys, 45.0)
+    initial_contour = torch.stack([ys, xs], axis=1)
+
+    props = ContourRefinerProps(
+        num_steps=100,
+        learning_rate=1.0,
+        data_loss_weight=1.0,
+        spacing_loss_weight=1.0,
+        fairing_loss_weight=0.1,
+        profile_length=21,
+        num_sampled_profiles=num_points,
+    )
+    template_model = TemplateModelFactory.create("fixed", props=TemplateProps(peak_dist=10.0))
+
+    refiner = GradientSurgeryContourRefiner(
+        initial_contour=initial_contour, props=props, template_model=template_model
+    )
+
+    history = list(refiner.refine(image))
+    final_x = history[-1]["contour"].detach().cpu().numpy()[:, 1].mean()
     assert np.abs(final_x - 50.0) < 1.0

@@ -15,9 +15,9 @@ class BiGaussianLoss(nn.Module):
         sample_step: float = 1.0,
     ):
         """
-        peak_dist: Distance between the two Gaussian peaks in pixels.
-        sigma: Sigma of each Gaussian (width parameter).
-        profile_len: Length of the sampled profile vector.
+        template_props: Properties defining the BiGaussian template (peak_dist, sigma, etc.).
+        num_samples: Length of the sampled profile vector.
+        sample_step: Distance between samples in pixels.
         """
         super().__init__()
 
@@ -136,9 +136,10 @@ class BiGaussianLoss(nn.Module):
 
 
 class LaplacianSmoothingLoss(nn.Module):
-    def __init__(self, window_size: int = 3):
+    def __init__(self, window_size: int = 3, mode: str = "full"):
         super().__init__()
         self.window_size = window_size
+        self.mode = mode
 
         # Create Gaussian kernel for Laplacian: v_i - weighted_mean(neighbors)
         # Weights decay with distance from center (Gaussian)
@@ -161,27 +162,82 @@ class LaplacianSmoothingLoss(nn.Module):
 
         self.register_buffer("kernel", kernel)
 
-    def forward(self, contour: torch.Tensor) -> torch.Tensor:
+    def forward(
+        self,
+        x: torch.Tensor,
+        normals: torch.Tensor | None = None,
+        edges: torch.Tensor | None = None,
+    ) -> torch.Tensor:
         """
-        Calculates the Laplacian smoothing loss for a closed 2D contour.
-        Penalizes the deviation of each vertex from the average of its neighbors.
-        This acts as a regularizer to keep the contour smooth (minimizing curvature).
-
-        window_size determines how many neighbors on each side are considered.
-        Calculates Laplacian smoothing loss using 1D convolution.
+        Calculates the Laplacian smoothing loss.
+        x: (N, C) tensor.
+        edges: (2, E) LongTensor of vertex indices. If provided, computes Graph Laplacian.
         """
-        # contour: (N, 2) -> (1, 2, N) for conv1d
-        x = contour.permute(1, 0).unsqueeze(0)
+        if edges is not None:
+            # Graph Laplacian for general meshes (3D surfaces)
+            # L_i = x_i - mean(neighbors_i)
+            row, col = edges
 
-        # Circular padding
-        x_pad = F.pad(x, (self.window_size, self.window_size), mode="circular")
+            # Sum neighbors: out[i] = sum(x[j]) for j in neighbors(i)
+            neighbor_sum = torch.zeros_like(x)
+            neighbor_sum.index_add_(0, row, x[col])
 
-        # Convolution (groups=2 applies same kernel to x and y independently)
-        weight = self.kernel.expand(2, -1, -1)
-        laplacian = F.conv1d(x_pad, weight, groups=2)
+            # Degree: out[i] = count(j)
+            degree = torch.zeros(x.shape[0], device=x.device, dtype=x.dtype)
+            degree.index_add_(0, row, torch.ones_like(row, dtype=x.dtype))
 
-        # (1, 2, N) -> (N, 2)
-        laplacian = laplacian.squeeze(0).permute(1, 0)
+            # Mean
+            neighbor_mean = neighbor_sum / (degree.unsqueeze(-1) + 1e-8)
+            laplacian = x - neighbor_mean
+
+            C = x.shape[-1]
+        else:
+            # 1D Convolution for contours/curves
+            if x.ndim == 1:
+                x = x.unsqueeze(-1)
+
+            # x: (N, C)
+            C = x.shape[-1]
+
+            # (N, C) -> (1, C, N) for conv1d
+            x_in = x.permute(1, 0).unsqueeze(0)
+
+            # Circular padding
+            x_pad = F.pad(x_in, (self.window_size, self.window_size), mode="circular")
+
+            # Convolution
+            weight = self.kernel.expand(C, -1, -1)
+            laplacian = F.conv1d(x_pad, weight, groups=C)
+
+            # (1, C, N) -> (N, C)
+            laplacian = laplacian.squeeze(0).permute(1, 0)
+
+        if self.mode == "tangential":
+            # Project onto tangent to regularize distribution without shrinking
+            if normals is not None:
+                if C not in (2, 3):
+                    raise ValueError(f"Tangential Laplacian expects 2D or 3D vectors, got C={C}.")
+                # Detach normals to ensure we don't optimize the projection direction itself
+                normals = normals.detach()
+                # 3D-generalizable formulation: L_tangential = L - (L . n)n
+                # laplacian: (N, 2), normals: (N, 2)
+                normal_comp = (laplacian * normals).sum(dim=-1, keepdim=True) * normals
+                tangential_laplacian = laplacian - normal_comp
+                return (tangential_laplacian**2).sum(dim=-1).mean()
+
+            v_next = torch.roll(x, shifts=-1, dims=0)
+            v_prev = torch.roll(x, shifts=1, dims=0)
+            tangents = F.normalize(v_next - v_prev, dim=-1, eps=1e-8)
+            proj = (laplacian * tangents).sum(dim=-1)
+            return (proj**2).mean()
+
+        if self.mode == "curvature_consistency":
+            # Penalize variance of curvature (magnitude of laplacian)
+            # Detach mean to prevent global expansion/shrinking bias
+            k = torch.norm(laplacian, dim=-1)
+            mean_k = k.mean().detach()
+            # Normalize by mean_k^2 for scale invariance (Coefficient of Variation)
+            return ((k - mean_k) ** 2).mean() / (mean_k**2 + 1e-8)
 
         # Minimize the magnitude of the Laplacian vectors
         loss = (laplacian**2).sum(dim=-1).mean()
@@ -192,15 +248,48 @@ class EdgeLengthConsistencyLoss(nn.Module):
     def __init__(self):
         super().__init__()
 
-    def forward(self, contour: torch.Tensor) -> torch.Tensor:
+    def forward(self, contour: torch.Tensor, edges: torch.Tensor | None = None) -> torch.Tensor:
         """
         Penalizes the variance of edge lengths to encourage uniform vertex distribution.
+        contour: (N, C) vertices.
+        edges: (2, E) indices of edges. If None, assumes closed loop 1D topology.
         """
-        v_next = torch.roll(contour, shifts=-1, dims=0)
-        edge_lengths = torch.norm(contour - v_next, dim=-1)
+        if edges is not None:
+            v0 = contour[edges[0]]
+            v1 = contour[edges[1]]
+            edge_lengths = torch.norm(v0 - v1, dim=-1)
+        else:
+            v_next = torch.roll(contour, shifts=-1, dims=0)
+            edge_lengths = torch.norm(contour - v_next, dim=-1)
 
         # Minimize variance: mean((l - mean_l)^2)
-        return torch.var(edge_lengths)
+        # return torch.var(edge_lengths)
+        # Detach mean to prevent shrinking bias and normalize for scale invariance
+        mean_l = edge_lengths.mean().detach()
+        return ((edge_lengths - mean_l) ** 2).mean() / (mean_l**2 + 1e-8)
+
+
+class NormalConsistencyLoss(nn.Module):
+    def __init__(self):
+        super().__init__()
+
+    def forward(self, normals: torch.Tensor, edges: torch.Tensor | None = None) -> torch.Tensor:
+        """
+        Penalizes the angle between adjacent normals (Fairing term).
+        normals: (N, C) unit normals.
+        edges: (2, E) indices of adjacent vertices/faces. If None, assumes closed loop 1D topology.
+        """
+        if edges is not None:
+            n0 = normals[edges[0]]
+            n1 = normals[edges[1]]
+            dot = (n0 * n1).sum(dim=-1)
+        else:
+            n_next = torch.roll(normals, shifts=-1, dims=0)
+            dot = (normals * n_next).sum(dim=-1)
+
+        # Clamp for numerical stability
+        dot = torch.clamp(dot, -1.0, 1.0)
+        return (1.0 - dot).mean()
 
 
 class TemplateShapeLoss(nn.Module):
@@ -233,15 +322,18 @@ class ContourLoss(nn.Module):
     def __init__(
         self,
         data_loss_weight: float = 1.0,
-        laplacian_loss_weight: float = 1.0,
-        edge_length_loss_weight: float = 1.0,
+        laplacian_loss_weight: float = 0.0,
+        edge_length_loss_weight: float = 0.0,
         sigma_reg_loss_weight: float = 1.0,
         template_shape_loss_weight: float = 1.0,
         template_smooth_loss_weight: float = 1.0,
+        spacing_loss_weight: float = 0.0,
+        fairing_loss_weight: float = 0.0,
         template_props: TemplateProps | None = None,
         num_samples: int = 51,
         sample_step: float = 1.0,
         laplacian_window_size: int = 3,
+        laplacian_mode: str = "full",
     ):
         super().__init__()
         logging.info("Initializing ContourLoss")
@@ -251,12 +343,20 @@ class ContourLoss(nn.Module):
         self.w_sigma_reg = sigma_reg_loss_weight
         self.w_template_shape = template_shape_loss_weight
         self.w_template_smooth = template_smooth_loss_weight
+        self.w_spacing = spacing_loss_weight
+        self.w_fairing = fairing_loss_weight
 
         self.data_loss_fn = BiGaussianLoss(
             template_props=template_props, num_samples=num_samples, sample_step=sample_step
         )
-        self.laplacian_loss_fn = LaplacianSmoothingLoss(window_size=laplacian_window_size)
+        self.laplacian_loss_fn = LaplacianSmoothingLoss(
+            window_size=laplacian_window_size, mode=laplacian_mode
+        )
         self.edge_loss_fn = EdgeLengthConsistencyLoss()
+        self.spacing_loss_fn = LaplacianSmoothingLoss(
+            window_size=laplacian_window_size, mode="tangential"
+        )
+        self.fairing_loss_fn = NormalConsistencyLoss()
         self.shape_loss_fn = TemplateShapeLoss()
 
     def forward(
@@ -270,6 +370,9 @@ class ContourLoss(nn.Module):
         amp1: torch.Tensor | None = None,
         amp2: torch.Tensor | None = None,
         mask: torch.Tensor | None = None,
+        vertices: torch.Tensor | None = None,
+        normals: torch.Tensor | None = None,
+        edges: torch.Tensor | None = None,
         reg_losses: dict[str, torch.Tensor] | None = None,
     ) -> dict[str, torch.Tensor]:
         # Data Loss: Cross-correlation with template
@@ -287,14 +390,29 @@ class ContourLoss(nn.Module):
             )
             shape_loss = self.shape_loss_fn(profiles, template, mask=mask)
 
-        laplacian_loss = self.laplacian_loss_fn(points_for_reg)
-        edge_loss = self.edge_loss_fn(points_for_reg)
+        # Legacy geometric losses (applied to points_for_reg)
+        laplacian_loss = self.laplacian_loss_fn(points_for_reg, edges=edges)
+        edge_loss = self.edge_loss_fn(points_for_reg, edges=edges)
+
+        # New geometric losses (applied to vertices and normals)
+        # If vertices not provided, fallback to points_for_reg (assuming it's vertices)
+        geom_target = vertices if vertices is not None else points_for_reg
+
+        spacing_loss = torch.tensor(0.0, device=profiles.device)
+        if self.w_spacing > 0:
+            spacing_loss = self.spacing_loss_fn(geom_target, normals=normals, edges=edges)
+
+        fairing_loss = torch.tensor(0.0, device=profiles.device)
+        if self.w_fairing > 0 and normals is not None:
+            fairing_loss = self.fairing_loss_fn(normals, edges=edges)
 
         total_loss = (
             self.w_data * data_loss
             + self.w_laplacian * laplacian_loss
             + self.w_edge * edge_loss
             + self.w_template_shape * shape_loss
+            + self.w_spacing * spacing_loss
+            + self.w_fairing * fairing_loss
         )
 
         # Add regularization losses from TemplateModel
@@ -315,6 +433,8 @@ class ContourLoss(nn.Module):
             "laplacian_loss": self.w_laplacian * laplacian_loss,
             "edge_loss": self.w_edge * edge_loss,
             "shape_loss": self.w_template_shape * shape_loss,
+            "spacing_loss": self.w_spacing * spacing_loss,
+            "fairing_loss": self.w_fairing * fairing_loss,
         }
 
         if reg_losses is not None:

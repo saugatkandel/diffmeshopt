@@ -26,6 +26,13 @@ We have implemented a 2D prototype for refining organelle segmentations using a 
     - Geometric losses (`LaplacianSmoothingLoss`, `EdgeLengthConsistencyLoss`) have been implemented and moved to `diffmeshopt/opt2d/loss.py`.
     - The optimization loop has been encapsulated into a `ContourRefiner` class within `diffmeshopt/opt2d/optimize.py`.
     - The `ContourRefiner` class now correctly uses stochastic sampling for the data term and computes geometric losses on the full contour.
+- **New Refinement Strategies**:
+    - **Gradient Surgery**: Implemented `GradientSurgeryContourRefiner` and updated losses to support a "Tangential Laplacian" and "Normal Consistency" (Fairing). This decouples smoothing from shrinking, allowing vertices to slide along the surface without collapsing the volume.
+    - **RBF Deformation**: Implemented `RBFContourRefiner`, which uses Radial Basis Functions to deform the mesh via sparse control points. This is inherently smooth and 3D-ready.
+- **3D Readiness**:
+    - Loss functions (`LaplacianSmoothingLoss`, `EdgeLengthConsistencyLoss`, `NormalConsistencyLoss`) updated to support explicit edge connectivity (Graph Laplacian), enabling support for 3D meshes.
+    - Template models (`NeuralField`, `Grid`, `Splat`) updated to handle 3D spatial dimensions.
+    - `PerPointTemplateModel` updated to use `LaplacianSmoothingLoss` for regularization and support explicit topology.
 - **Stochastic Sampling Implemented**:
     - A stratified random sampling strategy (`_get_stratified_indices`) has been implemented in `diffmeshopt/opt2d/sampling.py` to select mini-batches of vertices for the data loss calculation.
     - This approach provides stable normals by calculating them on the coarser, subsampled contour.
@@ -53,7 +60,8 @@ We have implemented a 2D prototype for refining organelle segmentations using a 
 
 ## Validation Status
 - **Synthetic Data**: Basic functionality works, but recent changes (template models, masking) have not been rigorously verified.
-- **Real Data**: The new template models and B-Spline refiner have **not yet been tested** on real data.
+- **New Features**: The `GradientSurgeryContourRefiner`, `RBFContourRefiner`, and 3D-ready loss functions have been implemented but **have not been tested yet**.
+- **Real Data**: The new template models, B-Spline refiner, and RBF refiner have **not yet been tested** on real data.
 - **Tests**: Fixed 6 failing tests. The root causes were an incorrect gradient assertion in `test_loss`, a path type mismatch in `test_trainer`, a missing attribute access guard in `PerPointTemplateModel`, and an unstable learning rate for the `NeuralField` optimization test. All tests now pass.
 
 ## Experimental Results & Observations

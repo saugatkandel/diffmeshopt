@@ -24,6 +24,8 @@ This document outlines the strategy for implementing and testing the differentia
 1.  **Contour Refiner**:
     *   **Standard**: Optimizes vertices $V$ directly.
     *   **B-Spline**: Optimizes control points $P$, where $V = M \cdot P$. Uses analytical normals.
+    *   **Gradient Surgery**: Optimizes vertices with tangential smoothing and normal consistency to prevent shrinking.
+    *   **RBF**: Optimizes sparse control points driving a global deformation field (Mesh-free, 3D-ready).
 2.  **Differentiable Sampler**:
     *   Computes normals (finite difference or analytical).
     *   Samples profiles using `grid_sample`.
@@ -31,7 +33,7 @@ This document outlines the strategy for implementing and testing the differentia
 3.  **Template Model**:
     *   Predicts template parameters $\theta_i = (\sigma_i, d_i, A_i)$ for each point.
     *   **Models**: Fixed, Global, Per-Point, B-Spline (1D along contour), Neural Field (MLP on $x,y$), Grid (2D learnable map), Gaussian Splat (RBFs).
-        *   **1D Contour Models (e.g., B-Spline)**: Model parameters as a function of the contour's arc-length. This provides a strong inductive bias for properties that vary smoothly *along the membrane*.
+        *   **1D Contour Models (e.g., B-Spline, Per-Point)**: Model parameters as a function of the contour's arc-length. This provides a strong inductive bias for properties that vary smoothly *along the membrane*.
         *   **2D Ambient Field Models (e.g., Neural Field, Grid, Splat)**: Model parameters as a field in the image's coordinate space. The contour samples this field at its vertex locations. More general but less parameter-efficient and lacks an explicit contour-connectivity bias.
     *   **Factory**: `TemplateModelFactory` handles instantiation to decouple `optimize.py` from specific model classes.
 
@@ -45,6 +47,8 @@ This document outlines the strategy for implementing and testing the differentia
 ### B. Geometric Regularization
 *   **Laplacian Smoothness**: Penalize the distance of a vertex from the centroid of its neighbors. $L_{lap} = \sum ||v_i - \frac{1}{2}(v_{i-1} + v_{i+1})||^2$.
 *   **Edge Length Consistency**: Penalize variance in edge lengths to prevent vertex bunching.
+*   **Tangential Smoothing (Spacing)**: Penalizes only the tangential component of the Laplacian to distribute vertices evenly without shrinking.
+*   **Normal Consistency (Fairing)**: Penalizes the angle between adjacent normals to ensure smoothness.
 *   **Template Regularization**: Smoothness priors for Per-Point template models.
 
 ## 5. Evaluation & Training
@@ -67,6 +71,9 @@ This document outlines the strategy for implementing and testing the differentia
 ### Step 2: Optimization Loop (Current Focus)
 *   Run `ContourRefiner` on synthetic data.
 *   **Validation**:
+    *   **New Implementations (Untested)**:
+        *   Verify `GradientSurgeryContourRefiner` prevents shrinking compared to standard Laplacian.
+        *   Verify `RBFContourRefiner` moves vertices coherently.
     *   Verify `BSplineContourRefiner` produces smooth curves without explicit Laplacian loss on vertices.
     *   Verify `NeuralFieldTemplateModel` recovers spatially varying width/amplitude.
     *   **Fix Tests**: Investigate and fix major failures in loss and optimization tests.
