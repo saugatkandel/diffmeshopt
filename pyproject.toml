@@ -50,6 +50,7 @@ pytorch3d = [
     "pytorch3d @ git+https://github.com/facebookresearch/pytorch3d.git", # 3D geometry
 ]
 
+# --- RUFF SETTINGS ---
 [tool.ruff]
 line-length = 99
 target-version = "py313"
@@ -69,6 +70,11 @@ ignore = ["F401"]
 [tool.ruff.lint.isort]
 known-first-party = ["diffmeshopt"]
 
+[tool.ruff.format]
+docstring-code-format = true
+docstring-code-line-length = 99
+
+# --- HATCH SETTINGS ---
 [tool.hatch.build.targets.wheel]
 packages = ["diffmeshopt"]
 

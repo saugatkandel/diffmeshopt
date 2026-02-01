@@ -27,15 +27,16 @@ We have implemented a 2D prototype for refining organelle segmentations using a 
     - The optimization loop has been encapsulated into a `ContourRefiner` class within `diffmeshopt/opt2d/optimize.py`.
     - The `ContourRefiner` class now correctly uses stochastic sampling for the data term and computes geometric losses on the full contour.
 - **New Refinement Strategies**:
-    - **Gradient Surgery**: Implemented `GradientSurgeryContourRefiner` and updated losses to support a "Tangential Laplacian" and "Normal Consistency" (Fairing). This decouples smoothing from shrinking, allowing vertices to slide along the surface without collapsing the volume.
+    - **Tangential Smoothing**: Implemented `TangentialSmoothingContourRefiner` and updated losses to support a "Tangential Laplacian" and "Normal Consistency" (Fairing). This decouples smoothing from shrinking, allowing vertices to slide along the surface without collapsing the volume.
     - **RBF Deformation**: Implemented `RBFContourRefiner`, which uses Radial Basis Functions to deform the mesh via sparse control points. This is inherently smooth and 3D-ready.
 - **3D Readiness**:
+    - **Documentation**: Created `plan_3d.md` outlining the porting strategy.
     - Loss functions (`LaplacianSmoothingLoss`, `EdgeLengthConsistencyLoss`, `NormalConsistencyLoss`) updated to support explicit edge connectivity (Graph Laplacian), enabling support for 3D meshes.
     - Template models (`NeuralField`, `Grid`, `Splat`) updated to handle 3D spatial dimensions.
     - `PerPointTemplateModel` updated to use `LaplacianSmoothingLoss` for regularization and support explicit topology.
 - **Stochastic Sampling Implemented**:
     - A stratified random sampling strategy (`_get_stratified_indices`) has been implemented in `diffmeshopt/opt2d/sampling.py` to select mini-batches of vertices for the data loss calculation.
-    - This approach provides stable normals by calculating them on the coarser, subsampled contour.
+    - **Design Choice**: We currently pass full-resolution normals to the sampler rather than recomputing them on the subsampled contour. This avoids geometric inaccuracies (chord vs tangent mismatch) while still benefiting from the efficiency of stochastic evaluation.
 - **B-Spline Parameterization**:
     - A `BSplineContourRefiner` class has been added to `diffmeshopt/opt2d/optimize.py` to optimize control points instead of raw vertices, enforcing smoothness by construction.
     - **Note:** This B-spline refiner has not yet been tested.
@@ -57,16 +58,18 @@ We have implemented a 2D prototype for refining organelle segmentations using a 
 - **Refactoring**:
     - Implemented `TemplateModelFactory` to clean up model instantiation.
     - Enhanced `compare_combinations.ipynb` with detailed parameter visualization (line plots, bar charts) and quantitative metrics tables.
+    - **Regularizer Architecture**: Implemented dynamic weight registry (`RegularizerType` enum -> auto-registered buffers) to eliminate manual synchronization and ensure type safety.
+    - **Documentation**: Consolidated regularization docs into `REGULARIZATION.md`.
 
 ## Validation Status
 - **Synthetic Data**: Basic functionality works, but recent changes (template models, masking) have not been rigorously verified.
-- **New Features**: The `GradientSurgeryContourRefiner`, `RBFContourRefiner`, and 3D-ready loss functions have been implemented but **have not been tested yet**.
+- **New Features**: `TangentialSmoothingContourRefiner`, `RBFContourRefiner`, and `BSplineContourRefiner` have been verified via convergence tests (`tests/opt2d/test_convergence.py`).
 - **Real Data**: The new template models, B-Spline refiner, and RBF refiner have **not yet been tested** on real data.
-- **Tests**: Fixed 6 failing tests. The root causes were an incorrect gradient assertion in `test_loss`, a path type mismatch in `test_trainer`, a missing attribute access guard in `PerPointTemplateModel`, and an unstable learning rate for the `NeuralField` optimization test. All tests now pass.
+- **Tests**: All tests pass, including new convergence tests for all refiner types.
 
 ## Experimental Results & Observations
 - **BSpline Refiner Shrinking**: The `BSplineContourRefiner` exhibits a tendency to shrink the contour more than the vertex-based refiner.
-    - *Speculation*: This is likely due to over-regularization. B-splines are inherently smooth; applying additional Laplacian and Edge Length penalties to the control points creates a strong shrinking force that may overpower the data term, especially if the image signal is weak.
+    - *Update*: This is mitigated by using Tangential Smoothing weights (disabling Laplacian/Edge Length on control points).
 - **Symmetric vs. Asymmetry**: Symmetric template models (`sigma1=sigma2`, `amp1=amp2`) consistently perform better than asymmetric ones.
     - *Speculation*: Asymmetric models introduce parameter ambiguity. The optimization can satisfy the loss by skewing the profile shape (e.g., making one side steeper) rather than moving the contour vertex to the true center. Symmetric models enforce a geometric centering constraint, providing a stronger gradient for positional alignment.
 

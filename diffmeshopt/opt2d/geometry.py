@@ -8,7 +8,9 @@ from scipy.interpolate import make_splprep
 
 def compute_normals(contour: torch.Tensor | np.ndarray, neighbor_shift: int = 1) -> torch.Tensor:
     """
-    Compute normals for a 2D closed contour.
+    Compute normals for a 2D closed contour using central differences.
+
+    Assumes the contour is a closed loop (cyclic), so the last point connects to the first.
     contour: (N, 2)
     """
     if isinstance(contour, np.ndarray):
@@ -32,6 +34,8 @@ def smooth_contour(
 ) -> np.ndarray:
     """
     Smooths and resamples a contour using B-splines.
+
+    Returns a closed loop with unique vertices (start point not repeated).
     """
     try:
         if not np.allclose(contour_np[0], contour_np[-1]):

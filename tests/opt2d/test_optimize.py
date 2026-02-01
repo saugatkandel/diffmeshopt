@@ -4,8 +4,8 @@ import torch
 from diffmeshopt.opt2d.optimize import (
     BSplineContourRefiner,
     ContourRefiner,
-    GradientSurgeryContourRefiner,
     RBFContourRefiner,
+    TangentialSmoothingContourRefiner,
 )
 from diffmeshopt.opt2d.props import (
     BSplineContourRefinerProps,
@@ -15,6 +15,7 @@ from diffmeshopt.opt2d.props import (
     GridTemplateProps,
     NeuralFieldTemplateProps,
     RBFContourRefinerProps,
+    RegularizerType,
     TemplateProps,
 )
 from diffmeshopt.opt2d.template import TemplateModelFactory
@@ -25,7 +26,7 @@ from diffmeshopt.opt2d.template import TemplateModelFactory
     [
         ContourRefiner,
         BSplineContourRefiner,
-        GradientSurgeryContourRefiner,
+        TangentialSmoothingContourRefiner,
         RBFContourRefiner,
     ],
 )
@@ -44,28 +45,32 @@ def test_refiner_template_combinations(
     num_points = len(initial_contour)
     img_size = image.shape[-1]
     # 1. Set up properties for the refiner
-    if refiner_class in (ContourRefiner, GradientSurgeryContourRefiner):
+    if refiner_class in (ContourRefiner, TangentialSmoothingContourRefiner):
         props = ContourRefinerProps(
             num_steps=5,
             learning_rate=0.1,
-            data_loss_weight=1.0,
-            laplacian_loss_weight=0.1,
-            edge_length_loss_weight=0.1,
+            initial_loss_weights={
+                "data_loss": 1.0,
+                RegularizerType.CONTOUR_LAPLACIAN.value: 0.1,
+                RegularizerType.EDGE_LENGTH.value: 0.1,
+            },
         )
     elif refiner_class is BSplineContourRefiner:
         props = BSplineContourRefinerProps(
             num_steps=5,
             learning_rate=0.1,
-            data_loss_weight=1.0,
-            laplacian_loss_weight=0.1,
-            edge_length_loss_weight=0.1,
+            initial_loss_weights={
+                "data_loss": 1.0,
+                RegularizerType.CONTOUR_LAPLACIAN.value: 0.1,
+                RegularizerType.EDGE_LENGTH.value: 0.1,
+            },
             contour_num_control_points=16,
         )
     elif refiner_class is RBFContourRefiner:
         props = RBFContourRefinerProps(
             num_steps=5,
             learning_rate=0.1,
-            data_loss_weight=1.0,
+            initial_loss_weights={"data": 1.0},
             rbf_num_control_points=8,
             rbf_kernel_sigma=10.0,
         )
@@ -115,9 +120,9 @@ def test_refiner_template_combinations(
     assert final_loss < initial_loss + 1e-5
 
 
-def test_gradient_surgery_no_shrinking():
+def test_tangential_smoothing_no_shrinking():
     """
-    Verifies that GradientSurgeryContourRefiner does not shrink a circle
+    Verifies that TangentialSmoothingContourRefiner does not shrink a circle
     in the absence of data forces, whereas standard ContourRefiner does.
     """
     # Create a circle
@@ -132,9 +137,11 @@ def test_gradient_surgery_no_shrinking():
     props_std = ContourRefinerProps(
         num_steps=20,
         learning_rate=0.5,
-        data_loss_weight=0.0,  # No data force
-        laplacian_loss_weight=1.0,  # Strong shrinking force
-        edge_length_loss_weight=0.0,
+        initial_loss_weights={
+            "data_loss": 0.0,  # No data force
+            RegularizerType.CONTOUR_LAPLACIAN.value: 1.0,  # Strong shrinking force
+            RegularizerType.EDGE_LENGTH.value: 0.0,
+        },
     )
     template_model = TemplateModelFactory.create("fixed", props=TemplateProps())
 
@@ -144,17 +151,21 @@ def test_gradient_surgery_no_shrinking():
     final_radius_std = torch.norm(refiner_std.contour, dim=1).mean().item()
     assert final_radius_std < radius - 1.0  # Should have shrunk significantly
 
-    # 2. Gradient Surgery Refiner (Non-Shrinking)
+    # 2. Tangential Smoothing Refiner (Non-Shrinking)
     props_gs = ContourRefinerProps(
         num_steps=20,
         learning_rate=0.5,
-        data_loss_weight=0.0,
-        spacing_loss_weight=5.0,  # Strong spacing force
-        fairing_loss_weight=1.0,
+        initial_loss_weights={
+            "data_loss": 0.0,
+            RegularizerType.TANGENTIAL_LAPLACIAN.value: 5.0,  # Strong spacing force
+            RegularizerType.NORMAL_CONSISTENCY.value: 1.0,
+        },
     )
-    # Note: GradientSurgeryContourRefiner forces laplacian=0 internally
+    # Note: TangentialSmoothingContourRefiner forces laplacian=0 internally
 
-    refiner_gs = GradientSurgeryContourRefiner(initial_contour.clone(), props_gs, template_model)
+    refiner_gs = TangentialSmoothingContourRefiner(
+        initial_contour.clone(), props_gs, template_model
+    )
     list(refiner_gs.refine(image))
 
     final_radius_gs = torch.norm(refiner_gs.contour, dim=1).mean().item()

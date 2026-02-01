@@ -7,6 +7,7 @@ from diffmeshopt.opt2d.props import (
     GaussianSplatTemplateProps,
     GridTemplateProps,
     NeuralFieldTemplateProps,
+    RegularizerType,
     TemplateProps,
 )
 from diffmeshopt.opt2d.template import (
@@ -43,15 +44,19 @@ def test_per_point_template_model():
     # Check regularization loss
     # Initially should be 0 since we init at props values
     reg_loss = model.get_regularization_loss()
-    assert torch.isclose(reg_loss["sigma_reg"], torch.tensor(0.0), atol=1e-5)
-    assert torch.isclose(reg_loss["template_smooth"], torch.tensor(0.0), atol=1e-5)
+    assert torch.isclose(
+        reg_loss[RegularizerType.TEMPLATE_PARAM_ANCHOR.value], torch.tensor(0.0), atol=1e-5
+    )
+    assert torch.isclose(
+        reg_loss[RegularizerType.TEMPLATE_PARAM_LAPLACIAN.value], torch.tensor(0.0), atol=1e-5
+    )
 
     # Modify params and check reg loss
     with torch.no_grad():
         model.log_sigma.add_(1.0)
 
     reg_loss = model.get_regularization_loss()
-    assert reg_loss["sigma_reg"] > 0
+    assert reg_loss[RegularizerType.TEMPLATE_PARAM_ANCHOR.value] > 0
 
 
 def test_bspline_template_model():

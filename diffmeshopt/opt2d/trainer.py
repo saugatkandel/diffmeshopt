@@ -19,6 +19,8 @@ from lightning.pytorch.utilities import rank_zero_only
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 
+from diffmeshopt.opt2d.props import RegularizerType
+
 torch.set_float32_matmul_precision("medium")
 # --- 1. DATA LAYER: Atomic Parquet Logger ---
 
@@ -170,13 +172,36 @@ class ContourLightningModule(pl_lightning.LightningModule):
                 self.register_buffer("gt_distance_map", gt_distance_map, persistent=False)
 
     def training_step(self, batch, batch_idx) -> torch.Tensor:
-        losses = self.refiner.compute_losses(self.image_ref)
+        # Sync step counter for adaptive logic
+        self.refiner.step_counter = self.global_step
+
+        # Use unified forward pass logic (handles sampling, adaptive weights, and loss)
+        losses = self.refiner.forward_pass(self.image_ref)
+
         for k, v in losses.items():
             self.log(k, v, prog_bar=(k == "total_loss"), on_step=True, on_epoch=False)
 
         if self.global_step % self.log_interval == 0:
             self._eval_metrics()
+
+        # Log adaptive weights if enabled
+        if (
+            hasattr(self.refiner, "adaptive_config")
+            and self.refiner.adaptive_config is not None
+            and self.refiner.adaptive_config.enabled
+        ):
+            self._log_adaptive_weights()
+
         return losses["total_loss"]
+
+    def _log_adaptive_weights(self):
+        """Log current regularization weights for monitoring."""
+        # Iterate over all regularizers defined in the system
+        for reg_type in RegularizerType:
+            # Use get_weight() which handles the buffer naming internally
+            if hasattr(self.refiner.loss_fn, "get_weight"):
+                weight_val = self.refiner.loss_fn.get_weight(reg_type).item()
+                self.log(f"weight/{reg_type.value}", weight_val, on_step=True, on_epoch=False)
 
     def _eval_metrics(self) -> None:
         from diffmeshopt.opt2d.evaluation import compute_contour_metrics, compute_metrics_from_map

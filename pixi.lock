@@ -702,7 +702,7 @@ packages:
 - pypi: ./
   name: diffmeshopt
   version: 0.1.0
-  sha256: 00c8b22d0e661527c8781d77d3276d7dc356fb2630fc62ff975edb6b1bc4f9a0
+  sha256: b3b7d9a6d4aa3c3f69c8d1e5dd0558b28672caabd0e1de7651401135997182d0
   requires_dist:
   - numpy>=2.4.0,<3
   - scipy>=1.17.0,<2

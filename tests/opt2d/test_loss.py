@@ -4,11 +4,13 @@ import torch.nn.functional as F
 
 from diffmeshopt.opt2d.loss import (
     BiGaussianLoss,
+    ContourLoss,
     EdgeLengthConsistencyLoss,
     LaplacianSmoothingLoss,
     NormalConsistencyLoss,
     TemplateProps,
 )
+from diffmeshopt.opt2d.props import RegularizerType
 
 
 @pytest.fixture
@@ -134,7 +136,7 @@ def test_bigaussian_loss():
     """Test the BiGaussian cross-correlation loss."""
     peak_dist, sigma, amplitude = 5.0, 1.0, 1.0
     props = TemplateProps(peak_dist=peak_dist, sigma=sigma, amp=amplitude)
-    loss_fn = BiGaussianLoss(template_props=props, num_samples=21)
+    loss_fn = BiGaussianLoss(template_props=props, num_samples=21, sample_step=1.0)
 
     # Create a perfect bi-gaussian profile
     profile_coords = torch.linspace(-10, 10, 21)
@@ -204,3 +206,58 @@ def test_normal_consistency_loss_with_edges():
     loss = loss_fn(normals, edges=edges)
     # Dot product is -1. Loss = 1 - (-1) = 2.
     assert torch.isclose(loss, torch.tensor(2.0))
+
+
+def test_contour_loss_dynamic_architecture():
+    """
+    Test that ContourLoss correctly implements the dynamic regularizer architecture.
+    Verifies:
+    1. Buffers are created for all RegularizerType entries.
+    2. initial_weights correctly override defaults.
+    3. get_weight/set_weight API works.
+    4. Forward pass returns all expected loss keys.
+    """
+    # 1. Test Initialization & Buffer Registration
+    initial_weights = {
+        RegularizerType.TANGENTIAL_LAPLACIAN.value: 5.0,
+        "normal_consistency": 2.0,
+    }
+    # Use small num_samples for simpler dummy data
+    loss_fn = ContourLoss(initial_weights=initial_weights, num_samples=10)
+
+    for reg_type in RegularizerType:
+        # Check buffer existence
+        buffer_name = f"w_{reg_type.value}"
+        assert hasattr(loss_fn, buffer_name), f"Missing buffer for {reg_type.name}"
+
+        # Check value initialization
+        weight = loss_fn.get_weight(reg_type).item()
+        if reg_type == RegularizerType.TANGENTIAL_LAPLACIAN:
+            assert weight == 5.0
+        elif reg_type == RegularizerType.NORMAL_CONSISTENCY:
+            assert weight == 2.0
+        else:
+            assert weight == 0.0
+
+    # 2. Test API
+    loss_fn.set_weight(RegularizerType.EDGE_LENGTH, 1.5)
+    assert loss_fn.get_weight("edge_length").item() == 1.5
+
+    # 3. Test Forward Pass Structure
+    # Create dummy inputs matching num_samples=10
+    profiles = torch.randn(1, 10)
+    points = torch.randn(10, 2)
+
+    # Run forward
+    results = loss_fn(profiles, points)
+
+    # Verify output structure
+    assert "total_loss" in results
+    assert "data_loss" in results
+
+    for reg_type in RegularizerType:
+        key = f"{reg_type.value}_loss"
+        assert key in results, f"Missing return key: {key}"
+        # Since we set EDGE_LENGTH to 1.5 and points are random, loss should be > 0
+        if reg_type == RegularizerType.EDGE_LENGTH:
+            assert results[key].item() > 0

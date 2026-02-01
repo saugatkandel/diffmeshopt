@@ -4,10 +4,22 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from diffmeshopt.opt2d.props import TemplateProps
+from diffmeshopt.opt2d.props import RegularizerType, TemplateProps
 
 
 class BiGaussianLoss(nn.Module):
+    """Data loss comparing sampled intensity profiles to bi-Gaussian template.
+
+    This loss measures how well the sampled intensity profiles from the image
+    match the expected double-peak bi-Gaussian pattern defined by template parameters.
+
+    Template parameters can be:
+    1. Fixed: Provided via template_props (stored as buffer)
+    2. Optimized: Passed dynamically via forward() (from TemplateModel.get_params())
+
+    The template is normalized (zero mean, unit std) to make correlation scale-invariant.
+    """
+
     def __init__(
         self,
         template_props: TemplateProps | None = None,
@@ -25,16 +37,24 @@ class BiGaussianLoss(nn.Module):
             template_props = TemplateProps()
         self.peak_dist = template_props.peak_dist
         self.sigma = template_props.sigma
+
+        # Initialize buffers
+        self.register_buffer("x", torch.zeros(num_samples))
+        self.register_buffer("template", torch.zeros(num_samples))
+
+        # Setup coordinate system
+        self.update_sampling(num_samples, sample_step)
+
+    def update_sampling(self, num_samples: int, sample_step: float):
+        """Update the internal coordinate system for a new sampling resolution."""
         self.profile_len = num_samples
+        self.sample_step = sample_step
 
-        # Create template
-        # Center is 0. Range is roughly [-profile_len/2, profile_len/2]
-        # Scale by sample_step to ensure x is in pixels (physical units)
         x = (
-            torch.arange(self.profile_len, dtype=torch.float32) - (self.profile_len - 1) / 2.0
+            torch.arange(num_samples, dtype=torch.float32) - (num_samples - 1) / 2.0
         ) * sample_step
-
         self.register_buffer("x", x)
+
         template = self.get_bigaussian_profile(x, self.peak_dist, self.sigma)
         self.register_buffer("template", template)
 
@@ -319,33 +339,70 @@ class TemplateShapeLoss(nn.Module):
 
 
 class ContourLoss(nn.Module):
+    """Combined loss for contour refinement with data fidelity and regularization.
+
+    Architecture:
+    - Data loss: Measures match between image profiles and template (always weight=1.0)
+    - Contour geometry regularizers: Smooth/regularize vertex positions
+    - Template parameter regularizers: Regularize learned template parameters
+
+    Weight management:
+    - Weights are stored as buffers (enable save/load and device transfer)
+    - Weights can be adapted during optimization (see AdaptiveRegularizationProps)
+    - Raw (unweighted) losses stored in self._raw_losses for adaptive computation
+
+    Workflow:
+    1. ContourRefiner calls loss_fn.forward(profiles, vertices, template_params, ...)
+    2. This method computes all losses (data + regularizers)
+    3. Returns weighted losses for backprop
+    4. Raw losses available in self._raw_losses for weight adaptation
+    """
+
     def __init__(
         self,
-        data_loss_weight: float = 1.0,
-        laplacian_loss_weight: float = 0.0,
-        edge_length_loss_weight: float = 0.0,
-        sigma_reg_loss_weight: float = 1.0,
-        template_shape_loss_weight: float = 1.0,
-        template_smooth_loss_weight: float = 1.0,
-        spacing_loss_weight: float = 0.0,
-        fairing_loss_weight: float = 0.0,
         template_props: TemplateProps | None = None,
         num_samples: int = 51,
         sample_step: float = 1.0,
         laplacian_window_size: int = 3,
         laplacian_mode: str = "full",
+        initial_weights: dict[str, float] | None = None,
     ):
         super().__init__()
         logging.info("Initializing ContourLoss")
-        self.w_data = data_loss_weight
-        self.w_laplacian = laplacian_loss_weight
-        self.w_edge = edge_length_loss_weight
-        self.w_sigma_reg = sigma_reg_loss_weight
-        self.w_template_shape = template_shape_loss_weight
-        self.w_template_smooth = template_smooth_loss_weight
-        self.w_spacing = spacing_loss_weight
-        self.w_fairing = fairing_loss_weight
 
+        # Dynamic buffer registration: automatically creates buffers for all regularizers
+        # This eliminates manual synchronization while using the correct PyTorch primitive
+        # Buffers (not Parameters) are semantically correct for hyperparameters/weights
+
+        # Override weights dict: user-provided weights override defaults via initial_weights
+        # keys should match RegularizerType values (e.g. "contour_laplacian")
+        weight_overrides = {}
+        if initial_weights:
+            for k, v in initial_weights.items():
+                # Try to match string key to RegularizerType
+                try:
+                    reg_type = RegularizerType(k)
+                    weight_overrides[reg_type] = v
+                except ValueError:
+                    logging.warning(
+                        f"ContourLoss received unknown argument/weight: '{k}'. Ignoring."
+                    )
+
+        # Dynamically register buffer for each regularizer (automatically synced with RegularizerType)
+        for reg_type in RegularizerType:
+            weight_value = weight_overrides.get(reg_type, 0.0)
+            buffer_name = f"w_{reg_type.value}"
+            self.register_buffer(buffer_name, torch.tensor(weight_value, dtype=torch.float32))
+
+        # Storage for raw (unweighted) losses for adaptive weight computation
+        self._raw_losses: dict[str, torch.Tensor] = {}
+
+        # Loss function instances
+        # Note: These are intentionally created explicitly (not dynamically) for clarity:
+        # - Easy to understand what losses exist
+        # - Easy to configure (each may need different parameters)
+        # - No performance benefit to dynamic creation
+        # - Only weights need dynamic registration (to ensure sync with RegularizerType)
         self.data_loss_fn = BiGaussianLoss(
             template_props=template_props, num_samples=num_samples, sample_step=sample_step
         )
@@ -358,6 +415,38 @@ class ContourLoss(nn.Module):
         )
         self.fairing_loss_fn = NormalConsistencyLoss()
         self.shape_loss_fn = TemplateShapeLoss()
+
+    def get_weight(self, reg_type) -> torch.Tensor:
+        """Get weight buffer for a regularizer.
+
+        Args:
+            reg_type: RegularizerType enum or string value
+
+        Returns:
+            Weight tensor (buffer)
+        """
+        if isinstance(reg_type, RegularizerType):
+            key = reg_type.value
+        else:
+            key = reg_type
+
+        buffer_name = f"w_{key}"
+        return getattr(self, buffer_name)
+
+    def set_weight(self, reg_type, value: float) -> None:
+        """Set weight buffer for a regularizer (for adaptive adjustment).
+
+        Args:
+            reg_type: RegularizerType enum or string value
+            value: New weight value
+        """
+        if isinstance(reg_type, RegularizerType):
+            key = reg_type.value
+        else:
+            key = reg_type
+
+        buffer_name = f"w_{key}"
+        getattr(self, buffer_name).fill_(value)
 
     def forward(
         self,
@@ -373,74 +462,92 @@ class ContourLoss(nn.Module):
         vertices: torch.Tensor | None = None,
         normals: torch.Tensor | None = None,
         edges: torch.Tensor | None = None,
-        reg_losses: dict[str, torch.Tensor] | None = None,
+        reg_losses: dict[str, torch.Tensor]
+        | None = None,  # From template_model.get_regularization_loss()
     ) -> dict[str, torch.Tensor]:
-        # Data Loss: Cross-correlation with template
-        # If peak_dist/sigma are provided (from TemplateModel), they are used.
+        """Compute combined loss with data fidelity and regularization.
+
+        Args:
+            profiles: Sampled intensity profiles from image (N, profile_length)
+            points_for_reg: Points to regularize (vertices or control points)
+            peak_dist, sigma, sigma1, sigma2, amp1, amp2: Template parameters from template_model
+            mask: Valid sample mask (for handling boundary/edge cases)
+            vertices: Actual contour vertices (may differ from points_for_reg for B-spline/RBF)
+            normals: Contour normals for tangential/normal regularizers
+            edges: Mesh connectivity for graph Laplacian (optional)
+            reg_losses: Template regularization losses from template_model.get_regularization_loss()
+                       Expected keys: "template_param_anchor", "template_param_laplacian"
+
+        Returns:
+            Dictionary with total_loss and all component losses (weighted)
+        """
+        # Compute all raw (unweighted) losses
         data_loss = self.data_loss_fn(
             profiles, peak_dist, sigma, sigma1, sigma2, amp1, amp2, mask=mask
         )
 
         shape_loss = torch.tensor(0.0, device=profiles.device)
         if peak_dist is not None:
-            # Shape Loss: Match the shape of the consensus (mean) profile to the template.
-            # This acts as a constraint to keep dynamic templates grounded to the data mean.
             template = self.data_loss_fn.get_bigaussian_profile(
                 self.data_loss_fn.x, peak_dist, sigma, sigma1, sigma2, amp1, amp2
             )
             shape_loss = self.shape_loss_fn(profiles, template, mask=mask)
 
-        # Legacy geometric losses (applied to points_for_reg)
-        laplacian_loss = self.laplacian_loss_fn(points_for_reg, edges=edges)
-        edge_loss = self.edge_loss_fn(points_for_reg, edges=edges)
+        contour_laplacian_loss = self.laplacian_loss_fn(points_for_reg, edges=edges)
+        edge_length_loss = self.edge_loss_fn(points_for_reg, edges=edges)
 
-        # New geometric losses (applied to vertices and normals)
-        # If vertices not provided, fallback to points_for_reg (assuming it's vertices)
         geom_target = vertices if vertices is not None else points_for_reg
 
-        spacing_loss = torch.tensor(0.0, device=profiles.device)
-        if self.w_spacing > 0:
-            spacing_loss = self.spacing_loss_fn(geom_target, normals=normals, edges=edges)
+        tangential_laplacian_loss = torch.tensor(0.0, device=profiles.device)
+        if self.get_weight(RegularizerType.TANGENTIAL_LAPLACIAN) > 0:
+            tangential_laplacian_loss = self.spacing_loss_fn(
+                geom_target, normals=normals, edges=edges
+            )
 
-        fairing_loss = torch.tensor(0.0, device=profiles.device)
-        if self.w_fairing > 0 and normals is not None:
-            fairing_loss = self.fairing_loss_fn(normals, edges=edges)
+        normal_consistency_loss = torch.tensor(0.0, device=profiles.device)
+        if self.get_weight(RegularizerType.NORMAL_CONSISTENCY) > 0 and normals is not None:
+            normal_consistency_loss = self.fairing_loss_fn(normals, edges=edges)
 
-        total_loss = (
-            self.w_data * data_loss
-            + self.w_laplacian * laplacian_loss
-            + self.w_edge * edge_loss
-            + self.w_template_shape * shape_loss
-            + self.w_spacing * spacing_loss
-            + self.w_fairing * fairing_loss
-        )
-
-        # Add regularization losses from TemplateModel
-        sigma_reg_loss = torch.tensor(0.0, device=profiles.device)
-        template_smooth_loss = torch.tensor(0.0, device=profiles.device)
-
-        if reg_losses is not None:
-            if "sigma_reg" in reg_losses:
-                sigma_reg_loss = reg_losses["sigma_reg"]
-                total_loss = total_loss + self.w_sigma_reg * sigma_reg_loss
-            if "template_smooth" in reg_losses:
-                template_smooth_loss = reg_losses["template_smooth"]
-                total_loss = total_loss + self.w_template_smooth * template_smooth_loss
-
-        results = {
-            "total_loss": total_loss,
-            "data_loss": self.w_data * data_loss,
-            "laplacian_loss": self.w_laplacian * laplacian_loss,
-            "edge_loss": self.w_edge * edge_loss,
-            "shape_loss": self.w_template_shape * shape_loss,
-            "spacing_loss": self.w_spacing * spacing_loss,
-            "fairing_loss": self.w_fairing * fairing_loss,
+        # Store raw losses for adaptive weight computation
+        # Keys must match RegularizerType enum values (plus "data" which is special)
+        self._raw_losses = {
+            "data": data_loss,
+            RegularizerType.CONTOUR_LAPLACIAN.value: contour_laplacian_loss,
+            RegularizerType.EDGE_LENGTH.value: edge_length_loss,
+            RegularizerType.TEMPLATE_SHAPE.value: shape_loss,
+            RegularizerType.TANGENTIAL_LAPLACIAN.value: tangential_laplacian_loss,
+            RegularizerType.NORMAL_CONSISTENCY.value: normal_consistency_loss,
         }
 
+        # Dynamically merge template regularization losses
         if reg_losses is not None:
-            if "sigma_reg" in reg_losses:
-                results["sigma_reg"] = self.w_sigma_reg * sigma_reg_loss
-            if "template_smooth" in reg_losses:
-                results["template_smooth"] = self.w_template_smooth * template_smooth_loss
+            for k, v in reg_losses.items():
+                # Only include valid regularizers to avoid issues in adaptive weight update
+                try:
+                    RegularizerType(k)
+                    self._raw_losses[k] = v
+                except ValueError:
+                    logging.warning(f"Unknown regularizer key in reg_losses: '{k}'. Ignoring.")
 
+        # Compute weighted losses and total
+        # Data loss always has weight=1.0 (serves as reference for adaptive regularizers)
+        total_loss = data_loss
+
+        # Return weighted losses
+        results = {
+            "data_loss": data_loss,  # Always weight=1.0
+        }
+
+        # Dynamically compute total loss and populate results for all regularizers
+        for reg_type in RegularizerType:
+            key = reg_type.value
+            # Use get() with default 0.0 to ensure all regularizers appear in results
+            # even if not computed (e.g. template losses for FixedTemplateModel)
+            raw_loss = self._raw_losses.get(key, torch.tensor(0.0, device=profiles.device))
+
+            weighted_loss = self.get_weight(reg_type) * raw_loss
+            total_loss = total_loss + weighted_loss
+            results[f"{key}_loss"] = weighted_loss
+
+        results["total_loss"] = total_loss
         return results

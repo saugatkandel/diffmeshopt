@@ -8,7 +8,7 @@ import torch.nn.functional as F
 
 from diffmeshopt.opt2d.geometry import compute_cubic_bspline_weights, get_bspline_matrix
 from diffmeshopt.opt2d.loss import LaplacianSmoothingLoss
-from diffmeshopt.opt2d.props import TemplateProps
+from diffmeshopt.opt2d.props import RegularizerType, TemplateProps
 
 
 class TemplateMode(Enum):
@@ -109,6 +109,121 @@ class BaseTemplateModel(nn.Module, abc.ABC):
     def get_regularization_loss(self) -> dict[str, torch.Tensor]:
         return {}
 
+    def _get_channel_weights(self, prefix: str = "anchor") -> list[float]:
+        """Map props weights to parameter indices for residual-based models.
+
+        Args:
+            prefix: 'anchor' or 'smooth' to select the type of weight.
+
+        Returns:
+            List of floats indicating relative weight for each parameter channel:
+            - Symmetric: 3 params [peak_dist, sigma, amp]
+            - Asymmetric: 5 params [peak_dist, sigma1, sigma2, amp1, amp2]
+        """
+
+        # Helper to get value safely
+        def get_w(name):
+            return getattr(self.props, f"{prefix}_{name}", 0.0)
+
+        # Note: amp/amp1/amp2 usually don't have explicit smooth/anchor props in the
+        # simplified list, defaulting to 0.0 or 1.0 as appropriate.
+        # For now, we assume amp is not heavily regularized or uses defaults.
+
+        if self.props.symmetric:
+            return [
+                get_w("peak_dist"),  # Channel 0: peak_dist
+                get_w("sigma"),  # Channel 1: sigma1
+                0.0,  # Channel 2: amp1
+            ]
+        else:
+            return [
+                get_w("peak_dist"),  # Channel 0: peak_dist
+                get_w("sigma"),  # Channel 1: sigma1
+                get_w("sigma_ratio"),  # Channel 2: sigma2
+                0.0,  # Channel 3: amp1
+                get_w("amp_ratio"),  # Channel 4: amp2
+            ]
+
+    def _compute_channel_anchor_loss(
+        self, learned_corrections: torch.Tensor, param_dim: int
+    ) -> torch.Tensor:
+        """Anchor learned parameter corrections toward zero (residual-based models).
+
+        Residual models learn additive corrections to initialization values.
+        Multiple parameter types (peak_dist, sigma, amp, etc.) are stored along one dimension.
+        Anchoring penalizes large corrections for selected parameter types.
+
+        Args:
+            learned_corrections: Tensor storing corrections for multiple parameter types.
+                                Examples:
+                                - NeuralField: head.weight shaped (num_params, hidden_dim)
+                                  → num_params rows, one per parameter type
+                                - Grid: shaped (1, num_params, H, W)
+                                  → num_params feature maps, one per parameter type
+                                - Splat: payloads shaped (num_splats, num_params)
+                                  → num_params values per splat, one per parameter type
+                                where num_params = 3 (symmetric) or 5 (asymmetric)
+            param_dim: Which dimension indexes parameter types (peak_dist, sigma, etc.):
+                      - param_dim=0: parameter types are rows (weight matrices)
+                      - param_dim=1: parameter types are feature dimension (grids/payloads)
+
+        Returns:
+            Scalar anchor loss (L2 penalty on selected parameter type corrections)
+        """
+        anchor_loss = torch.tensor(0.0, device=learned_corrections.device)
+        weights = self._get_channel_weights("anchor")
+
+        for param_idx, weight in enumerate(weights):
+            if weight > 0:
+                if param_dim == 0:  # Weight matrix: params indexed by rows
+                    anchor_loss = anchor_loss + learned_corrections[param_idx].pow(2).mean()
+                elif param_dim == 1:  # Grid/payloads: params indexed by feature dimension
+                    anchor_loss = anchor_loss + learned_corrections[:, param_idx].pow(2).mean()
+
+        return anchor_loss
+
+    def _compute_explicit_param_anchor(self) -> torch.Tensor:
+        """Anchor explicit parameters toward their initialization values.
+
+        Explicit models (Global, PerPoint) store parameters directly as learnable tensors.
+        This method penalizes deviations from initial values based on anchor flags.
+
+        Used by:
+            - GlobalOptimizableTemplateModel (single global parameters)
+            - PerPointTemplateModel (per-vertex parameters)
+
+        Returns:
+            Scalar anchor loss (L2 penalty on log-space parameter deviations)
+        """
+        prior = torch.tensor(0.0, device=self.sigma_init.device)
+
+        if self.props.anchor_sigma > 0:
+            loss = (self.log_sigma - self.sigma_init.log()).pow(2).mean()
+            prior = prior + loss * self.props.anchor_sigma
+
+        if self.props.anchor_peak_dist > 0:
+            # Reconstruct current peak_dist
+            sigma1 = self.log_sigma.exp()
+            if self.props.symmetric:
+                sigma2 = sigma1
+            else:
+                sigma2 = sigma1 * self.log_sigma_ratio.exp()
+            peak_dist = (sigma1 + sigma2) * (
+                self.props.min_peak_ratio / 2.0 + self.log_excess.exp()
+            )
+            loss = (peak_dist.log() - self.peak_dist_init.log()).pow(2).mean()
+            prior = prior + loss * self.props.anchor_peak_dist
+
+        if not self.props.symmetric:
+            if self.props.anchor_sigma_ratio > 0:
+                loss = (self.log_sigma_ratio - self.sigma_ratio_init.log()).pow(2).mean()
+                prior = prior + loss * self.props.anchor_sigma_ratio
+            if self.props.anchor_amp_ratio > 0:
+                loss = (self.log_amp_ratio - self.amp_ratio_init.log()).pow(2).mean()
+                prior = prior + loss * self.props.anchor_amp_ratio
+
+        return prior
+
     def set_topology(self, edges: torch.Tensor | None) -> None:
         """
         Sets the connectivity for regularization (optional).
@@ -116,52 +231,65 @@ class BaseTemplateModel(nn.Module, abc.ABC):
         """
         pass
 
-    def _decode_log_residuals(self, residuals: torch.Tensor) -> dict[str, torch.Tensor]:
+    def _decode_log_residuals(self, learned_corrections: torch.Tensor) -> dict[str, torch.Tensor]:
+        """Convert learned additive corrections to final parameter values.
+
+        Residual-based models (Neural, Grid, Splat) learn corrections in log-space:
+            final_param = exp(log(init_value) + learned_correction)
+        This ensures positive values and makes the model start at initialization.
+
+        Args:
+            learned_corrections: (N, num_params) tensor of additive corrections in log-space.
+                                num_params = number of parameter types:
+                                  - 3 for symmetric: [peak_dist, sigma, amp]
+                                  - 5 for asymmetric: [peak_dist, sigma1, sigma2, amp1, amp2]
+
+        Returns:
+            Dictionary with decoded parameters: peak_dist, sigma1, sigma2, amp1, amp2
         """
-        Decodes residuals added to log-space initialization values.
-        residuals: (N, C) tensor.
-        """
-        base_peak = self.peak_dist_init.log()
-        base_sigma = self.sigma_init.log()
-        base_amp = self.amp_init.log()
+        log_peak_init = self.peak_dist_init.log()
+        log_sigma_init = self.sigma_init.log()
+        log_amp_init = self.amp_init.log()
 
         # Helper to enforce min_peak_ratio constraint
-        def enforce_separation(p_dist, s1, s2):
-            min_dist = (s1 + s2) * (self.props.min_peak_ratio / 2.0)
-            return torch.max(p_dist, min_dist)
+        def enforce_min_separation(peak_dist, sigma1, sigma2):
+            """Ensure peaks are separated by at least min_peak_ratio * sigma."""
+            min_dist = (sigma1 + sigma2) * (self.props.min_peak_ratio / 2.0)
+            return torch.max(peak_dist, min_dist)
 
         if self.props.symmetric:
-            # residuals: [d_peak, d_s1, d_a1]
-            peak_dist = (base_peak + residuals[:, 0]).exp()
-            sigma1 = (base_sigma + residuals[:, 1]).exp()
-            sigma2 = sigma1  # Symmetric
+            # Symmetric: learn 3 corrections [peak_dist, sigma, amp]
+            peak_dist = (log_peak_init + learned_corrections[:, 0]).exp()
+            sigma1 = (log_sigma_init + learned_corrections[:, 1]).exp()
+            sigma2 = sigma1  # Symmetric: sigma2 = sigma1
 
-            peak_dist = enforce_separation(peak_dist, sigma1, sigma2)
+            peak_dist = enforce_min_separation(peak_dist, sigma1, sigma2)
 
+            amp = (log_amp_init + learned_corrections[:, 2]).exp()
             return {
                 "peak_dist": peak_dist,
                 "sigma1": sigma1,
                 "sigma2": sigma2,
-                "amp1": (base_amp + residuals[:, 2]).exp(),
-                "amp2": (base_amp + residuals[:, 2]).exp(),
+                "amp1": amp,
+                "amp2": amp,  # Symmetric: amp2 = amp1
             }
         else:
-            # residuals: [d_peak, d_s1, d_s2, d_a1, d_a2]
-            base_sigma2 = (self.sigma_init * self.sigma_ratio_init).log()
-            base_amp2 = (self.amp_init * self.amp_ratio_init).log()
+            # Asymmetric: learn 5 corrections [peak_dist, sigma1, sigma2, amp1, amp2]
+            log_sigma2_init = (self.sigma_init * self.sigma_ratio_init).log()
+            log_amp2_init = (self.amp_init * self.amp_ratio_init).log()
 
-            peak_dist = (base_peak + residuals[:, 0]).exp()
-            sigma1 = (base_sigma + residuals[:, 1]).exp()
-            sigma2 = (base_sigma2 + residuals[:, 2]).exp()
+            peak_dist = (log_peak_init + learned_corrections[:, 0]).exp()
+            sigma1 = (log_sigma_init + learned_corrections[:, 1]).exp()
+            sigma2 = (log_sigma2_init + learned_corrections[:, 2]).exp()
 
-            peak_dist = enforce_separation(peak_dist, sigma1, sigma2)
+            peak_dist = enforce_min_separation(peak_dist, sigma1, sigma2)
 
             return {
                 "peak_dist": peak_dist,
                 "sigma1": sigma1,
                 "sigma2": sigma2,
-                "amp1": (base_amp + residuals[:, 3]).exp(),
-                "amp2": (base_amp2 + residuals[:, 4]).exp(),
+                "amp1": (log_amp_init + learned_corrections[:, 3]).exp(),
+                "amp2": (log_amp2_init + learned_corrections[:, 4]).exp(),
             }
 
 
@@ -189,9 +317,15 @@ class FixedTemplateModel(BaseTemplateModel):
 
 
 class GlobalOptimizableTemplateModel(BaseTemplateModel):
+    """Single set of template parameters shared across all vertices.
+
+    This is an explicit parameterization: parameters are learned directly.
+    Appropriate when all vertices should have identical template properties.
+    """
+
     def __init__(self, props: TemplateProps):
         super().__init__(props)
-        # Single scalar parameters for the whole contour
+        # Single scalar parameters shared across entire contour
         self.log_sigma = nn.Parameter(torch.tensor(float(props.sigma)).log())
         if not props.symmetric:
             self.log_sigma_ratio = nn.Parameter(torch.tensor(float(props.sigma_ratio)).log())
@@ -210,10 +344,6 @@ class GlobalOptimizableTemplateModel(BaseTemplateModel):
         batch_indices: torch.Tensor | None = None,
         coordinates: torch.Tensor | None = None,
     ) -> dict[str, torch.Tensor]:
-        if coordinates is not None and coordinates.shape[-1] == 3:
-            logging.warning_once(
-                "PerPointTemplateModel: 3D coordinates detected. Smoothness regularization assumes 1D ordering and may be invalid for meshes."
-            )
         sigma1 = self.log_sigma.exp()
         excess = self.log_excess.exp()
 
@@ -235,34 +365,24 @@ class GlobalOptimizableTemplateModel(BaseTemplateModel):
         }
 
     def get_regularization_loss(self) -> dict[str, torch.Tensor]:
-        # Weak prior to stay near initialization
-        # Reconstruct log_peak_dist for the prior
-        sigma1 = self.log_sigma.exp()
-        if self.props.symmetric:
-            sigma2 = sigma1
-        else:
-            sigma2 = sigma1 * self.log_sigma_ratio.exp()
-        peak_dist = (sigma1 + sigma2) * (self.props.min_peak_ratio / 2.0 + self.log_excess.exp())
-        log_peak_dist = peak_dist.log()
-
-        prior = (self.log_sigma - self.sigma_init.log()).pow(2) + (
-            log_peak_dist - self.peak_dist_init.log()
-        ).pow(2)
-
-        if not self.props.symmetric:
-            prior = (
-                prior
-                + (self.log_sigma_ratio - self.sigma_ratio_init.log()).pow(2)
-                + (self.log_amp_ratio - self.amp_ratio_init.log()).pow(2)
-            )
-
-        return {"sigma_reg": prior * 0.1}  # Scaled down slightly
+        """Weak prior to stay near initialization (respects anchor flags)."""
+        prior = self._compute_explicit_param_anchor()
+        return {
+            RegularizerType.TEMPLATE_PARAM_ANCHOR.value: prior * 0.1
+        }  # Proximal reg: keep params near initialization
 
 
 class PerPointTemplateModel(BaseTemplateModel):
+    """Independent template parameters at each vertex.
+
+    This is an explicit parameterization with spatial regularization.
+    Each vertex has its own parameters, regularized for spatial coherence
+    along the contour (Laplacian smoothness).
+    """
+
     def __init__(self, num_points: int, props: TemplateProps):
         super().__init__(props)
-        # Parameters for each point
+        # Independent learnable parameters at each vertex
         self.log_sigma = nn.Parameter(torch.full((num_points,), float(props.sigma)).log())
         if not props.symmetric:
             self.log_sigma_ratio = nn.Parameter(
@@ -323,11 +443,16 @@ class PerPointTemplateModel(BaseTemplateModel):
         }
 
     def get_regularization_loss(self) -> dict[str, torch.Tensor]:
-        # Regularization: Gaussian prior on log(sigma) centered at initialization
-        prior = (self.log_sigma - self.sigma_init.log()).pow(2).mean()
-        if not self.props.symmetric:
-            prior = prior + (self.log_sigma_ratio - self.sigma_ratio_init.log()).pow(2).mean()
-        # Reconstruct log_peak_dist for smoothness
+        """Anchor and smoothness for per-point parameters.
+
+        Anchoring: Keep parameters close to initialization
+        Smoothness: Spatial coherence along contour (Laplacian)
+        """
+        # Anchoring using shared helper
+        prior = self._compute_explicit_param_anchor()
+
+        # Smoothness: Penalize changes along the contour
+        # Need peak_dist for smoothness computation
         sigma1 = self.log_sigma.exp()
         if self.props.symmetric:
             sigma2 = sigma1
@@ -361,12 +486,26 @@ class PerPointTemplateModel(BaseTemplateModel):
 
             # (N, C)
             params_stacked = torch.stack(params_list, dim=1)
+            # We can't easily apply different weights inside the vectorized laplacian loss
+            # without changing how params are stacked or the loss fn.
+            # For simplicity in PerPoint, we assume uniform smoothness weight for now,
+            # or we could compute it per channel.
             smoothness = self.laplacian_loss_fn(params_stacked)
 
-        return {"sigma_reg": prior, "template_smooth": smoothness}
+        return {
+            RegularizerType.TEMPLATE_PARAM_ANCHOR.value: prior,
+            RegularizerType.TEMPLATE_PARAM_LAPLACIAN.value: smoothness,
+        }
 
 
 class BSplineTemplateModel(BaseTemplateModel):
+    """Template parameters vary smoothly along contour via B-spline interpolation.
+
+    This is an explicit parameterization with built-in smoothness.
+    Parameters are defined at control points and interpolated along the curve.
+    B-spline basis provides C² continuity automatically.
+    """
+
     def __init__(self, props: TemplateProps, **kwargs):  # Accept extra kwargs
         super().__init__(props)
         self.num_cp = getattr(props, "bspline_num_control_points", 10)
@@ -465,35 +604,93 @@ class BSplineTemplateModel(BaseTemplateModel):
         return res
 
     def get_regularization_loss(self) -> dict[str, torch.Tensor]:
-        # Proximal-type regularization:
-        # 1. Keep sigma close to initialization (prevents collapse to 0 or explosion)
-        # 2. Enforce smoothness along the contour (spatial coupling)
+        """Proximal regularization and smoothness for B-spline control points.
 
-        sigma_ref = self.sigma_init.log()
+        Design: Anchor at CONTROL POINTS, not sampled curve points.
+
+        Rationale:
+        - Control points are the actual learned representation
+        - More efficient than evaluating at many sample points
+        - B-spline's smoothness property means anchoring control points
+          naturally encourages smooth behavior in the evaluated curve
+
+        Components:
+        1. Anchoring: Keep control points near initialization (prevents collapse)
+        2. Smoothness: Penalize differences between adjacent control points
+        """
+        # Anchoring (proximal regularization)
+        reg_anchor = torch.tensor(0.0, device=self.log_control_points.device)
 
         # sigma1 is always at index 1
         log_sigma1_cp = self.log_control_points[1]
 
-        # Deviation from prior (Proximal term towards initialization)
-        reg_sigma = (log_sigma1_cp - sigma_ref).pow(2).mean()
+        if self.props.anchor_sigma > 0:
+            sigma_ref = self.sigma_init.log()
+            reg_anchor = (
+                reg_anchor + (log_sigma1_cp - sigma_ref).pow(2).mean() * self.props.anchor_sigma
+            )
 
-        # Smoothness (first differences of control points)
-        # This acts as a spatial regularizer
-        smooth_sigma = (log_sigma1_cp[1:] - log_sigma1_cp[:-1]).pow(2).mean()
+        if self.props.anchor_peak_dist > 0:
+            # peak_dist is at index 0
+            log_peak_dist_cp = self.log_control_points[0]
+            peak_dist_ref = self.peak_dist_init.log()
+            reg_anchor = (
+                reg_anchor
+                + (log_peak_dist_cp - peak_dist_ref).pow(2).mean() * self.props.anchor_peak_dist
+            )
 
+        # Smoothness (first differences of control points) - always applied
+        smooth = (log_sigma1_cp[1:] - log_sigma1_cp[:-1]).pow(2).mean() * self.props.smooth_sigma
+
+        # Asymmetric case
         if not self.props.symmetric:
-            sigma2_ref = (self.sigma_init * self.sigma_ratio_init).log()
-            log_sigma2_cp = self.log_control_points[3]
-            reg_sigma = reg_sigma + (log_sigma2_cp - sigma2_ref).pow(2).mean()
-            smooth_sigma = smooth_sigma + (log_sigma2_cp[1:] - log_sigma2_cp[:-1]).pow(2).mean()
+            log_sigma2_cp = self.log_control_points[3]  # sigma2 at index 3
+            log_amp2_cp = self.log_control_points[4]  # amp2 at index 4
 
-        return {"sigma_reg": reg_sigma, "template_smooth": smooth_sigma}
+            if self.props.anchor_sigma_ratio > 0:
+                sigma2_ref = (self.sigma_init * self.sigma_ratio_init).log()
+                reg_anchor = (
+                    reg_anchor
+                    + (log_sigma2_cp - sigma2_ref).pow(2).mean() * self.props.anchor_sigma_ratio
+                )
+
+            if self.props.anchor_amp_ratio > 0:
+                amp2_ref = (self.amp_init * self.amp_ratio_init).log()
+                reg_anchor = (
+                    reg_anchor
+                    + (log_amp2_cp - amp2_ref).pow(2).mean() * self.props.anchor_amp_ratio
+                )
+
+            # Smoothness on additional channels
+            smooth = (
+                smooth
+                + (log_sigma2_cp[1:] - log_sigma2_cp[:-1]).pow(2).mean()
+                * self.props.smooth_sigma_ratio
+            )
+            smooth = (
+                smooth
+                + (log_amp2_cp[1:] - log_amp2_cp[:-1]).pow(2).mean() * self.props.smooth_amp_ratio
+            )
+
+        return {
+            RegularizerType.TEMPLATE_PARAM_ANCHOR.value: reg_anchor,
+            RegularizerType.TEMPLATE_PARAM_LAPLACIAN.value: smooth,
+        }
 
 
 class NeuralFieldTemplateModel(BaseTemplateModel):
+    """Template parameters as a learned continuous function of spatial position.
+
+    This is an implicit (residual) parameterization.
+    A neural network maps (x, y) coordinates to parameter corrections.
+    The MLP architecture provides implicit smoothness.
+
+    Output: additive corrections in log-space to initialization values.
+    """
+
     def __init__(self, props: TemplateProps, image_shape: tuple, spatial_dim: int = 2):
         super().__init__(props)
-        # Coordinate-based MLP: (x, y) -> (peak_dist, sigma1, sigma2, amp1, amp2)
+        # MLP: (x, y) -> parameter corrections [d_peak, d_sigma1, ...]
         self.image_shape = image_shape
         self.spatial_dim = spatial_dim
         layers = []
@@ -545,21 +742,49 @@ class NeuralFieldTemplateModel(BaseTemplateModel):
 
         return self._decode_log_residuals(out)
 
+    def get_regularization_loss(self) -> dict[str, torch.Tensor]:
+        """Anchor network outputs for implicit smoothness.
+
+        Neural field provides smoothness through the network architecture.
+        Only anchoring is needed to prevent drift from initialization.
+        """
+        # Anchor output layer weights (one row per parameter type)
+        anchor_loss = self._compute_channel_anchor_loss(self.head.weight, param_dim=0)
+
+        # Also anchor bias terms for selected parameter types
+        weights = self._get_channel_weights("anchor")
+        for param_idx, weight in enumerate(weights):
+            if weight > 0:
+                anchor_loss = anchor_loss + self.head.bias[param_idx].pow(2) * weight
+
+        return {RegularizerType.TEMPLATE_PARAM_ANCHOR.value: anchor_loss}
+
 
 class GridTemplateModel(BaseTemplateModel):
+    """Template parameters interpolated from a learned spatial grid.
+
+    This is an implicit (residual) parameterization.
+    A learnable grid stores parameter corrections at regular spatial locations.
+    Values at arbitrary positions are obtained via bilinear/trilinear interpolation.
+    Grid interpolation provides implicit smoothness.
+
+    Grid values: additive corrections in log-space to initialization values.
+    """
+
     def __init__(self, props: TemplateProps, image_shape: tuple, spatial_dim: int = 2):
         super().__init__(props)
         self.image_shape = image_shape
         self.spatial_dim = spatial_dim
-        # Learnable grid: (1, 5, H, W)
+        # Learnable grid: (1, num_params, H, W) or (1, num_params, D, H, W)
+        # where num_params is the number of parameter types we're learning
         grid_size = getattr(props, "grid_size", 32)
-        # Channels: peak_dist, sigma1, [sigma2], amp1, [amp2]
-        num_channels = 3 if props.symmetric else 5
+        # Parameter types: peak_dist, sigma1, [sigma2], amp1, [amp2]
+        num_params = 3 if props.symmetric else 5
 
         if spatial_dim == 3:
-            self.grid = nn.Parameter(torch.zeros(1, num_channels, grid_size, grid_size, grid_size))
+            self.grid = nn.Parameter(torch.zeros(1, num_params, grid_size, grid_size, grid_size))
         else:
-            self.grid = nn.Parameter(torch.zeros(1, num_channels, grid_size, grid_size))
+            self.grid = nn.Parameter(torch.zeros(1, num_params, grid_size, grid_size))
 
     def get_params(
         self,
@@ -592,14 +817,34 @@ class GridTemplateModel(BaseTemplateModel):
         view_shape = [1] * (self.spatial_dim) + [-1, self.spatial_dim]
         grid_coords = grid_coords.view(*view_shape)
 
-        # Sample from grid
-        num_channels = 3 if self.props.symmetric else 5
-        out = F.grid_sample(self.grid, grid_coords, align_corners=True).view(num_channels, -1).T
+        # Sample from grid (interpolate parameter values at query positions)
+        num_params = 3 if self.props.symmetric else 5
+        out = F.grid_sample(self.grid, grid_coords, align_corners=True).view(num_params, -1).T
 
         return self._decode_log_residuals(out)
 
+    def get_regularization_loss(self) -> dict[str, torch.Tensor]:
+        """Anchor grid values for implicit smoothness.
+
+        Grid interpolation provides smoothness naturally.
+        Only anchoring is needed to prevent drift from initialization.
+        """
+        # Grid shape: (1, num_params, H, W) - anchor across H,W for each param type
+        anchor_loss = self._compute_channel_anchor_loss(self.grid[0], param_dim=0)
+        return {RegularizerType.TEMPLATE_PARAM_ANCHOR.value: anchor_loss}
+
 
 class GaussianSplatTemplateModel(BaseTemplateModel):
+    """Template parameters interpolated from scattered Gaussian splats.
+
+    This is an implicit (residual) parameterization.
+    Parameters are weighted combinations of learnable 'splats' (RBF centers).
+    Each splat has a position, radius, and parameter payload.
+    RBF interpolation provides implicit smoothness.
+
+    Splat payloads: additive corrections in log-space to initialization values.
+    """
+
     def __init__(self, props: TemplateProps, image_shape: tuple, spatial_dim: int = 2):
         super().__init__(props)
         self.image_shape = image_shape
@@ -641,3 +886,13 @@ class GaussianSplatTemplateModel(BaseTemplateModel):
         out = weights @ self.payloads  # (B, 5)
 
         return self._decode_log_residuals(out)
+
+    def get_regularization_loss(self) -> dict[str, torch.Tensor]:
+        """Anchor splat payloads for implicit smoothness.
+
+        RBF interpolation provides smoothness naturally.
+        Only anchoring is needed to prevent drift from initialization.
+        """
+        # Payloads shape: (num_splats, num_params) - anchor across splats for each param type
+        anchor_loss = self._compute_channel_anchor_loss(self.payloads, param_dim=1)
+        return {RegularizerType.TEMPLATE_PARAM_ANCHOR.value: anchor_loss}

@@ -94,6 +94,11 @@ def sample_profiles(
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """
     Sample intensity profiles from the image along the normals.
+
+    Normal Computation:
+    - If 'normals' are provided, they are used directly.
+    - If 'normals' are None, they are computed from 'contour' using central differences.
+      This assumes the contour is a closed loop.
     """
     if normals is None:
         normals = compute_normals(contour)
@@ -143,6 +148,14 @@ def sample_profiles_stochastic(
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     """
     Samples profiles for a pseudo-uniformly distributed random subset of contour vertices.
+
+    Sampling Strategy:
+    1. Stratified Sampling: Selects 'num_samples' indices roughly evenly spaced along the contour.
+    2. Normal Computation:
+       - If 'normals' are provided (recommended), they are subsampled from the full set.
+         This preserves the high-resolution geometry information (tangents of the original curve).
+       - If 'normals' are None, they are computed on the subsampled 'coarse_contour'.
+         This acts as an implicit low-pass filter but can be geometrically inaccurate (chord vs tangent) if sampling is sparse.
     """
 
     # 1. Select a subset of indices that are spaced out along the contour
