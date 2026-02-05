@@ -2,6 +2,7 @@ import pytest
 import torch
 import torch.nn.functional as F
 
+from diffmeshopt.opt2d.config import RegularizerType
 from diffmeshopt.opt2d.loss import (
     BiGaussianLoss,
     ContourLoss,
@@ -10,7 +11,6 @@ from diffmeshopt.opt2d.loss import (
     NormalConsistencyLoss,
     TemplateProps,
 )
-from diffmeshopt.opt2d.props import RegularizerType
 
 
 @pytest.fixture
@@ -135,7 +135,7 @@ def test_normal_consistency_loss():
 def test_bigaussian_loss():
     """Test the BiGaussian cross-correlation loss."""
     peak_dist, sigma, amplitude = 5.0, 1.0, 1.0
-    props = TemplateProps(peak_dist=peak_dist, sigma=sigma, amp=amplitude)
+    props = TemplateProps(peak_dist=peak_dist, sigma=sigma)
     loss_fn = BiGaussianLoss(template_props=props, num_samples=21, sample_step=1.0)
 
     # Create a perfect bi-gaussian profile

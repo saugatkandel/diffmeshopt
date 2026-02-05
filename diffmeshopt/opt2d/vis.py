@@ -1,3 +1,5 @@
+from typing import Any
+
 import matplotlib.pyplot as plt
 import numpy as np
 import torch
@@ -5,9 +7,9 @@ from matplotlib.axes import Axes
 
 import diffmeshopt.opt2d.geometry as geometry
 import diffmeshopt.opt2d.sampling as sampling
+from diffmeshopt.opt2d.config import ContourRefinerProps, TemplateProps
 from diffmeshopt.opt2d.geometry import get_bspline_matrix
 from diffmeshopt.opt2d.loss import BiGaussianLoss
-from diffmeshopt.opt2d.props import ContourRefinerProps, TemplateProps
 
 
 def plot_prior_and_landscape_from_contour(
@@ -175,12 +177,47 @@ def _plot_landscape_from_signal(x, y_signal, template, ax):
     ax.grid(True, linestyle="--", alpha=0.5)
 
 
+def _compute_peak_boundary_lines(
+    contour: np.ndarray,
+    normals: np.ndarray,
+    template_params: dict[str, Any],
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """Helper to compute peak and boundary lines for visualization."""
+    N = len(contour)
+
+    def _get_param(name, default_val=1.0):
+        val = template_params.get(name, default_val)
+        if isinstance(val, torch.Tensor):
+            val = val.detach().cpu().numpy()
+        if np.ndim(val) == 0:
+            return np.full(N, val)
+        return val
+
+    peak_dist = _get_param("peak_dist", 4.0)
+    sigma1 = _get_param("sigma1", 1.0)
+
+    if "sigma2" in template_params:
+        sigma2 = _get_param("sigma2")
+    else:
+        sigma2 = sigma1
+
+    # Calculate offsets
+    p1 = contour - normals * (peak_dist[:, None] / 2.0)
+    p2 = contour + normals * (peak_dist[:, None] / 2.0)
+    b1 = contour - normals * (peak_dist[:, None] / 2.0 + 2 * sigma1[:, None])
+    b2 = contour + normals * (peak_dist[:, None] / 2.0 + 2 * sigma2[:, None])
+
+    return p1, p2, b1, b2
+
+
 def plot_contour_normals(
     image: np.ndarray,
     contour: np.ndarray,
     ax: Axes | None = None,
     stochastic: bool = True,
     refiner_props: ContourRefinerProps | None = None,
+    template_params: dict[str, Any] | None = None,
+    plot_normals: bool = True,
 ) -> None:
     """
     Visualizes the contour and its normals on top of the image.
@@ -192,6 +229,8 @@ def plot_contour_normals(
         ax (matplotlib.axes.Axes): Optional axes.
         stochastic (bool): If True, use stochastic sampling for normals (simulating optimization step).
         refiner_props (ContourRefinerProps): Props containing sampling configuration.
+        template_params (dict): Optional dictionary of template parameters (peak_dist, sigma1, sigma2) to visualize peaks/boundaries.
+        plot_normals (bool): If True, plots the yellow normal lines.
     """
     if refiner_props is None:
         refiner_props = ContourRefinerProps()
@@ -210,64 +249,155 @@ def plot_contour_normals(
 
     # Calculate normals
     contour_tensor = torch.from_numpy(contour).float()
+    full_normals = geometry.compute_normals(contour_tensor).numpy()
 
-    if stochastic:
-        # Simulate the stochastic sampling used in optimization
-        indices = (
-            sampling._get_stratified_indices(len(contour), num_lines, device=contour_tensor.device)
-            .cpu()
-            .numpy()
-        )
+    # Plot peaks and boundaries if template params are provided
+    if template_params is not None:
+        p1, p2, b1, b2 = _compute_peak_boundary_lines(contour, full_normals, template_params)
+        ax.plot(p1[:, 1], p1[:, 0], "c--", linewidth=1.5, alpha=0.8, label="Peaks")
+        ax.plot(p2[:, 1], p2[:, 0], "c--", linewidth=1.5, alpha=0.8)
+        ax.plot(b1[:, 1], b1[:, 0], "m:", linewidth=1.5, alpha=0.8, label="Boundaries")
+        ax.plot(b2[:, 1], b2[:, 0], "m:", linewidth=1.5, alpha=0.8)
 
-        # Extract coarse contour and compute normals on it
-        coarse_contour = contour_tensor[indices]
-        normals = geometry.compute_normals(coarse_contour).numpy()
+    title_suffix = ""
+    if plot_normals:
+        if stochastic:
+            # Simulate the stochastic sampling used in optimization
+            indices = (
+                sampling._get_stratified_indices(
+                    len(contour), num_lines, device=contour_tensor.device
+                )
+                .cpu()
+                .numpy()
+            )
 
-        active_points = contour[indices]
-        active_normals = normals
+            # Extract coarse contour and compute normals on it
+            coarse_contour = contour_tensor[indices]
+            normals = geometry.compute_normals(coarse_contour).numpy()
 
-        title_suffix = f"(stochastic batch: {len(indices)})"
-    else:
-        # Compute normals on full contour
-        normals = geometry.compute_normals(contour_tensor).numpy()
-
-        N_points = len(contour)
-        # Ensure we don't try to plot more lines than points
-        num_lines_to_plot = min(num_lines, N_points)
-
-        if num_lines_to_plot > 0:
-            indices = np.linspace(0, N_points - 1, num_lines_to_plot, dtype=int)
             active_points = contour[indices]
-            active_normals = normals[indices]
+            active_normals = normals
+
+            title_suffix = f"(stochastic batch: {len(indices)})"
         else:
-            active_points = []
-            active_normals = []
+            # Compute normals on full contour
+            normals = full_normals
 
-        title_suffix = f"(showing {len(active_points)} of {N_points})"
+            N_points = len(contour)
+            # Ensure we don't try to plot more lines than points
+            num_lines_to_plot = min(num_lines, N_points)
 
-    for i in range(len(active_points)):
-        nr, nc = active_normals[i]
+            if num_lines_to_plot > 0:
+                indices = np.linspace(0, N_points - 1, num_lines_to_plot, dtype=int)
+                active_points = contour[indices]
+                active_normals = normals[indices]
+            else:
+                active_points = []
+                active_normals = []
 
-        # Center point
-        r0, c0 = active_points[i]
+            title_suffix = f"(showing {len(active_points)} of {N_points})"
 
-        # Define line segment for profile
-        # From -profile_len/2 to +profile_len/2 along normal
-        half_len = (profile_len - 1) / 2.0
+        for i in range(len(active_points)):
+            nr, nc = active_normals[i]
+            r0, c0 = active_points[i]
+            half_len = (profile_len - 1) / 2.0
+            r_start, c_start = r0 - nr * half_len, c0 - nc * half_len
+            r_end, c_end = r0 + nr * half_len, c0 + nc * half_len
+            ax.plot([c_start, c_end], [r_start, r_end], "y-", alpha=0.8, linewidth=1)
 
-        r_start = r0 - nr * half_len
-        c_start = c0 - nc * half_len
-        r_end = r0 + nr * half_len
-        c_end = c0 + nc * half_len
-
-        # Plot line (x=col, y=row)
-        ax.plot([c_start, c_end], [r_start, r_end], "y-", alpha=0.8, linewidth=1)
-
-    ax.set_title(f"Contour Normals {title_suffix}")
+    ax.set_title(f"Contour Details {title_suffix}")
     ax.legend()
 
     if show_plot:
         plt.show()
+
+
+def plot_contour_crops(
+    image: np.ndarray,
+    contour: np.ndarray,
+    crop_indices: list[int],
+    init_contour: np.ndarray | None = None,
+    gt_contour: np.ndarray | None = None,
+    crop_size: int = 60,
+    template_params: dict[str, Any] | None = None,
+    num_cols: int = 4,
+) -> plt.Figure:
+    """
+    Creates a grid of cropped visualizations centered on specific contour vertices.
+    """
+    num_crops = len(crop_indices)
+    num_rows = int(np.ceil(num_crops / num_cols))
+
+    fig, axes = plt.subplots(
+        num_rows, num_cols, figsize=(num_cols * 2, num_rows * 2), constrained_layout=True
+    )
+    axes = axes.flatten()
+
+    H, W = image.shape[:2]
+    half_size = crop_size // 2
+
+    # Precompute lines if needed
+    p1, p2, b1, b2 = None, None, None, None
+    if template_params is not None:
+        contour_tensor = torch.from_numpy(contour).float()
+        normals = geometry.compute_normals(contour_tensor).numpy()
+        p1, p2, b1, b2 = _compute_peak_boundary_lines(contour, normals, template_params)
+
+    for i, ax in enumerate(axes):
+        if i >= num_crops:
+            ax.axis("off")
+            continue
+
+        idx = crop_indices[i]
+        # Center on initial contour if available (to track drift), else current
+        if init_contour is not None:
+            cy, cx = init_contour[idx]
+        else:
+            cy, cx = contour[idx]
+
+        y_min = max(0, int(cy - half_size))
+        y_max = min(H, int(cy + half_size))
+        x_min = max(0, int(cx - half_size))
+        x_max = min(W, int(cx + half_size))
+
+        ax.imshow(image, cmap="gray")
+
+        if p1 is not None:
+            ax.plot(p1[:, 1], p1[:, 0], "c--", linewidth=1.5, alpha=0.8, label="Peaks")
+            ax.plot(p2[:, 1], p2[:, 0], "c--", linewidth=1.5, alpha=0.8)
+            ax.plot(b1[:, 1], b1[:, 0], "m:", linewidth=1.5, alpha=0.8, label="Boundaries")
+            ax.plot(b2[:, 1], b2[:, 0], "m:", linewidth=1.5, alpha=0.8)
+
+        if init_contour is not None:
+            ax.plot(
+                init_contour[:, 1],
+                init_contour[:, 0],
+                "r--",
+                alpha=0.6,
+                linewidth=1.5,
+                label="Initial",
+            )
+
+        ax.plot(contour[:, 1], contour[:, 0], "b-", linewidth=2, label="Refined")
+
+        if gt_contour is not None:
+            ax.plot(gt_contour[:, 1], gt_contour[:, 0], "k:", alpha=0.8, linewidth=2, label="GT")
+
+        ax.set_xlim(x_min, x_max)
+        ax.set_ylim(y_max, y_min)
+        ax.axis("off")
+
+    # Legend
+    handles, labels = axes[0].get_legend_handles_labels()
+    by_label = dict(zip(labels, handles))
+    fig.legend(
+        by_label.values(),
+        by_label.keys(),
+        loc="upper center",
+        ncol=len(by_label),
+        bbox_to_anchor=(0.5, 1.02),
+    )
+    return fig
 
 
 def plot_bspline_basis(

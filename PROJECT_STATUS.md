@@ -55,6 +55,7 @@ We have implemented a 2D prototype for refining organelle segmentations using a 
         - `GaussianSplatTemplateModel`: Parameters defined by a set of Gaussian RBFs (splats) in the image domain.
 - **Data Handling**:
     - Added `trim_data` to `generate_2d_data.py` to crop images around the segmentation.
+    - **Intensity Inversion**: Updated `load_real_data` to invert image intensities for real cryo-ET data. Since membranes are dark in cryo-ET but the model expects bright peaks (Gaussian), we multiply the normalized image by -1.
 - **Refactoring**:
     - Implemented `TemplateModelFactory` to clean up model instantiation.
     - Enhanced `compare_combinations.ipynb` with detailed parameter visualization (line plots, bar charts) and quantitative metrics tables.

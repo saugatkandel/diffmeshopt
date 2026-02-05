@@ -2,7 +2,7 @@ import pytest
 import torch
 import torch.nn as nn
 
-from diffmeshopt.opt2d.props import (
+from diffmeshopt.opt2d.config import (
     BSplineTemplateProps,
     GaussianSplatTemplateProps,
     GridTemplateProps,
@@ -11,13 +11,6 @@ from diffmeshopt.opt2d.props import (
     TemplateProps,
 )
 from diffmeshopt.opt2d.template import (
-    BSplineTemplateModel,
-    FixedTemplateModel,
-    GaussianSplatTemplateModel,
-    GlobalOptimizableTemplateModel,
-    GridTemplateModel,
-    NeuralFieldTemplateModel,
-    PerPointTemplateModel,
     TemplateModelFactory,
 )
 
@@ -45,10 +38,10 @@ def test_per_point_template_model():
     # Initially should be 0 since we init at props values
     reg_loss = model.get_regularization_loss()
     assert torch.isclose(
-        reg_loss[RegularizerType.TEMPLATE_PARAM_ANCHOR.value], torch.tensor(0.0), atol=1e-5
+        reg_loss[RegularizerType.ANCHOR_SIGMA.value], torch.tensor(0.0), atol=1e-5
     )
     assert torch.isclose(
-        reg_loss[RegularizerType.TEMPLATE_PARAM_LAPLACIAN.value], torch.tensor(0.0), atol=1e-5
+        reg_loss[RegularizerType.SMOOTH_SIGMA.value], torch.tensor(0.0), atol=1e-5
     )
 
     # Modify params and check reg loss
@@ -56,7 +49,7 @@ def test_per_point_template_model():
         model.log_sigma.add_(1.0)
 
     reg_loss = model.get_regularization_loss()
-    assert reg_loss[RegularizerType.TEMPLATE_PARAM_ANCHOR.value] > 0
+    assert reg_loss[RegularizerType.ANCHOR_SIGMA.value] > 0
 
 
 def test_bspline_template_model():
@@ -126,7 +119,7 @@ def test_grid_template_model():
     model = TemplateModelFactory.create("grid", props, image_shape=image_shape)
 
     assert isinstance(model.grid, nn.Parameter)
-    assert model.grid.shape == (1, 5, props.grid_size, props.grid_size)
+    assert model.grid.shape == (1, 2, props.grid_size, props.grid_size)
 
     # Coords are in world space; model should normalize them for grid_sample
     coords = torch.tensor([[25.0, 25.0], [75.0, 75.0]])  # (N, 2)

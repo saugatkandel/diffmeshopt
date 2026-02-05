@@ -4,7 +4,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from diffmeshopt.opt2d.props import RegularizerType, TemplateProps
+from diffmeshopt.opt2d.config import RegularizerType, TemplateProps
 
 
 class BiGaussianLoss(nn.Module):
@@ -335,7 +335,7 @@ class TemplateShapeLoss(nn.Module):
         mp_std = mean_profile.std(unbiased=False)
         mean_profile_norm = (mean_profile - mp_mean) / (mp_std + 1e-8)
 
-        return F.mse_loss(mean_profile_norm.expand_as(template), template)
+        return F.l1_loss(mean_profile_norm.expand_as(template), template)
 
 
 class ContourLoss(nn.Module):

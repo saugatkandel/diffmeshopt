@@ -41,6 +41,9 @@ def compute_contour_metrics(
     if gt_contour is None or len(gt_contour) == 0:
         return {}
 
+    if contour is None or len(contour) == 0:
+        return {}
+
     # If both are torch tensors, stay in torch to potentially use GPU
     if isinstance(contour, torch.Tensor) and isinstance(gt_contour, torch.Tensor):
         return _compute_metrics_torch(contour, gt_contour)

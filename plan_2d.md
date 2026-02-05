@@ -43,7 +43,7 @@ This document outlines the strategy for implementing and testing the differentia
 ### A. Data Term
 *   **Template Matching**:
     *   Loss = $1 - \text{CrossCorrelation}(P_i, T(\theta_i))$.
-    *   Includes a **Shape Loss** to ground the template to the mean data profile.
+    *   Includes a **Shape Loss** (L1 preferred) to ground the template to the mean data profile.
 
 ### B. Geometric Regularization
 *   **Laplacian Smoothness**: Penalize the distance of a vertex from the centroid of its neighbors. $L_{lap} = \sum ||v_i - \frac{1}{2}(v_{i-1} + v_{i+1})||^2$.
@@ -55,6 +55,7 @@ This document outlines the strategy for implementing and testing the differentia
 ## 5. Evaluation & Training
 *   **Metrics** (`diffmeshopt/opt2d/evaluation.py`):
     *   Mean Distance to Ground Truth.
+    *   **Confidence Map**: Visualizing the per-point Cross-Correlation score to identify broken membranes.
     *   Hausdorff Distance.
 *   **Trainer** (`diffmeshopt/opt2d/trainer.py`):
     *   `OptimizationTrainer` class to manage the loop.
@@ -84,6 +85,7 @@ This document outlines the strategy for implementing and testing the differentia
 
 ### Step 3: Real Data Evaluation (Pending)
 *   Load `data/20289/denoised/data_slice123.pkl`.
+    *   **Note**: Ensure intensity inversion is applied (membranes are dark in cryo-ET, model expects bright peaks).
 *   Run optimization with `BSplineContourRefiner` + `BSplineTemplateModel`.
 *   Visual check: Does the contour snap to the membrane? Do the learned parameters (width) make physical sense?
 

@@ -1,24 +1,26 @@
 import abc
 import copy
 import logging
+from pathlib import Path
+from typing import Any
 
 import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+from diffmeshopt.opt2d.config import (
+    BSplineContourRefinerProps,
+    ContourRefinerProps,
+    RBFContourRefinerProps,
+    RegularizerType,
+)
 from diffmeshopt.opt2d.geometry import (
     compute_normals,
     get_bspline_derivative_matrix,
     get_bspline_matrix,
 )
 from diffmeshopt.opt2d.loss import ContourLoss
-from diffmeshopt.opt2d.props import (
-    BSplineContourRefinerProps,
-    ContourRefinerProps,
-    RBFContourRefinerProps,
-    RegularizerType,
-)
 from diffmeshopt.opt2d.sampling import sample_profiles_stochastic
 from diffmeshopt.opt2d.template import BaseTemplateModel
 
@@ -45,6 +47,11 @@ class ContourRefinerBase(nn.Module, abc.ABC):
     - Template parameters passed from template_model.get_params()
     - Template regularization from template_model.get_regularization_loss()
     - Weights can adapt during optimization (AdaptiveRegularizationProps)
+
+    Architectural Note:
+        This module is designed to be stateless with respect to the input image.
+        The image is passed to `step()` and `forward_pass()` rather than stored.
+        This enables video tracking (reusing refiner across frames) and clean serialization.
     """
 
     def __init__(
@@ -176,6 +183,11 @@ class ContourRefinerBase(nn.Module, abc.ABC):
         This unifies the logic for both manual stepping and Lightning training steps,
         ensuring consistent behavior for adaptive regularization and sampling.
         """
+        # Safety check: Ensure image is on the same device as the model parameters
+        # This supports the stateless design where image is passed in dynamically
+        if image.device != self.contour.device:
+            image = image.to(self.contour.device)
+
         # 1. Sample image features once for this step
         sampling_data = self.sample_image_features(image)
 
@@ -297,6 +309,165 @@ class ContourRefinerBase(nn.Module, abc.ABC):
             self.optimizer = None
         else:
             logging.warning("reset() called but no initial state was captured.")
+
+    def visualize_profile_statistics(
+        self,
+        image: torch.Tensor,
+        ax: Any | None = None,
+        save_path: str | Path | None = None,
+        title: str = "Profile Statistics",
+    ):
+        """
+        Visualizes the statistics of sampled intensity profiles against the template.
+
+        For non-global template models (where parameters vary along the contour),
+        this computes the template profile at each sample location and visualizes
+        the mean template. This allows verifying if the average sampled profile
+        matches the average expected template.
+
+        Args:
+            image: The image tensor to sample from.
+            ax: Optional matplotlib axes to plot on.
+            save_path: Optional path to save the figure.
+            title: Title for the plot.
+        """
+        # Lazy import to keep visualization dependencies optional and separate
+        import matplotlib.pyplot as plt
+
+        from diffmeshopt.opt2d.loss import BiGaussianLoss
+        from diffmeshopt.opt2d.vis import plot_profile_statistics
+
+        # 1. Sample profiles using the refiner's configuration
+        with torch.no_grad():
+            profiles, sub_indices, valid_mask = self.sample_image_features(image)
+
+            if valid_mask is not None:
+                profiles = profiles[valid_mask]
+                sub_indices = sub_indices[valid_mask]
+
+            # 2. Compute representative template
+            # For global models, this returns the same params for all indices.
+            # For non-global models, this returns specific params for each sampled point.
+            template_params = self.template_model.get_params(
+                batch_indices=sub_indices, coordinates=self.contour
+            )
+
+            # Generate x coordinates for the profile
+            num_samples = self.props.profile_length
+            step = self.props.sample_step
+            x = (np.arange(num_samples) - (num_samples - 1) / 2.0) * step
+            x_tensor = torch.from_numpy(x).float().to(profiles.device)
+
+            # Generate template profiles for all samples
+            # Shape: (N, L) where N is number of samples
+            templates = BiGaussianLoss.get_bigaussian_profile(x=x_tensor, **template_params)
+
+            # Average template to get a single representative profile for plotting
+            # This handles the "non-global" aspect by marginalizing over the contour
+            if templates.ndim == 2:
+                mean_template = templates.mean(dim=0)
+            else:
+                mean_template = templates
+
+        # 3. Delegate plotting to visualization module (Separation of Concerns)
+        created_fig = False
+        if ax is None:
+            fig, ax = plt.subplots(figsize=(8, 5))
+            created_fig = True
+        else:
+            fig = ax.figure
+
+        plot_profile_statistics(
+            profiles=profiles,
+            x=x,
+            title=title,
+            ax=ax,
+            template=mean_template,
+            template_props=self.template_model.props,
+        )
+
+        if save_path:
+            fig.savefig(save_path, bbox_inches="tight")
+
+        if created_fig:
+            if not save_path:
+                plt.show()
+            else:
+                plt.close(fig)
+
+    def visualize_contour(
+        self,
+        image: torch.Tensor,
+        ax: Any | None = None,
+        save_path: str | Path | None = None,
+        stochastic: bool = False,
+        title: str = "Contour State",
+        plot_normals: bool = False,
+    ):
+        """
+        Visualizes the current contour state on the image, including peaks and boundaries.
+
+        Args:
+            image: The image tensor.
+            ax: Optional matplotlib axes.
+            save_path: Optional path to save the figure.
+            stochastic: If True, visualizes the stochastic sampling batch.
+                        If False, visualizes the full contour and template geometry.
+            title: Plot title.
+            plot_normals: If True, plots the yellow normal lines.
+        """
+        # Lazy import to keep visualization dependencies optional
+        import matplotlib.pyplot as plt
+
+        from diffmeshopt.opt2d.vis import plot_contour_normals
+
+        # Prepare data
+        image_np = image.detach().cpu().numpy()
+        if image_np.ndim == 3 and image_np.shape[0] == 1:
+            image_np = image_np.squeeze(0)
+
+        contour_np = self.contour.detach().cpu().numpy()
+
+        # Get template params for visualization
+        with torch.no_grad():
+            params = self.template_model.get_params(coordinates=self.contour)
+
+        # Convert params to numpy/float
+        params_clean = {}
+        for k, v in params.items():
+            if isinstance(v, torch.Tensor):
+                params_clean[k] = v.detach().cpu().numpy()
+            else:
+                params_clean[k] = v
+
+        created_fig = False
+        if ax is None:
+            # Create a large figure for detailed inspection
+            fig, ax = plt.subplots(figsize=(12, 12))
+            created_fig = True
+        else:
+            fig = ax.figure
+
+        plot_contour_normals(
+            image=image_np,
+            contour=contour_np,
+            ax=ax,
+            stochastic=stochastic,
+            refiner_props=self.props,
+            template_params=params_clean,
+            plot_normals=plot_normals,
+        )
+
+        ax.set_title(title)
+
+        if save_path:
+            fig.savefig(save_path, bbox_inches="tight")
+
+        if created_fig:
+            if not save_path:
+                plt.show()
+            else:
+                plt.close(fig)
 
     def _set_template_topology(self, num_points: int, device: torch.device):
         """
@@ -446,6 +617,10 @@ def create_tangential_smoothing_refiner(
 
         # Customize regularizer defaults for tangential smoothing
         reg_defaults = RegularizerDefaults.get_defaults()
+
+        # Disable adaptation for redundant or conflicting losses
+        reg_defaults.regularizers[RegularizerType.EDGE_LENGTH].target_ratio = 0.0
+        reg_defaults.regularizers[RegularizerType.CONTOUR_LAPLACIAN].target_ratio = 0.0
 
         # Adjust fairing ratio based on refiner type for tangential smoothing
         if refiner_class.__name__ == "BSplineContourRefiner":

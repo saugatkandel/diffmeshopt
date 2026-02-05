@@ -5,7 +5,13 @@ import click
 import joblib
 import matplotlib.pyplot as plt
 import numpy as np
-from scipy.ndimage import gaussian_filter
+from scipy.ndimage import (
+    binary_dilation,
+    binary_erosion,
+    binary_fill_holes,
+    distance_transform_edt,
+    gaussian_filter,
+)
 from skimage import measure
 
 
@@ -54,10 +60,15 @@ def generate_synthetic_data(shape=(256, 256), radius=60, center=(128, 128)):
     return image, initial_contour, gt_contour
 
 
-def load_real_data(path):
+def load_real_data(path, offset=0, perturb=0.0):
     """
     Loads real data from pickle file.
     Expected content: Dictionary with keys "tomo_avg30A", "organelle", "membrane"
+
+    Preprocessing:
+    - Normalizes image (z-score).
+    - Inverts intensity: Cryo-ET membranes are dark, but the optimizer expects bright peaks.
+      The image is multiplied by -1 after normalization.
     """
     logging.info(f"Loading real data from {path}...")
     data = joblib.load(path)
@@ -66,12 +77,44 @@ def load_real_data(path):
     organelle_seg = data["organelle"]
     membrane_seg = data["membrane"]
 
-    # Normalize image
-    tomo_slice = (tomo_slice - np.mean(tomo_slice)) / (np.std(tomo_slice) + 1e-8)
+    # Normalize and invert image intensities.
+    # In cryo-ET, membranes are dark (low intensity). The model expects bright peaks,
+    # so we invert the contrast by multiplying the z-scored image by -1.
+    tomo_slice = -((tomo_slice - np.mean(tomo_slice)) / (np.std(tomo_slice) + 1e-8))
 
     # Extract contour from organelle segmentation (rough initialization)
     # organelle_seg is assumed to be a binary mask or label map
-    contours = measure.find_contours(organelle_seg, 0.5)
+    mask = organelle_seg > 0
+
+    if offset < 0:
+        logging.info(f"Shrinking segmentation by {abs(offset)} pixels")
+        mask = binary_erosion(mask, iterations=abs(offset))
+    elif offset > 0:
+        logging.info(f"Expanding segmentation by {offset} pixels")
+        mask = binary_dilation(mask, iterations=offset)
+
+    if perturb > 0:
+        logging.info(f"Perturbing segmentation mask (SDF noise level {perturb})")
+        # Signed distance function: positive inside, negative outside
+        dist_in = distance_transform_edt(mask)
+        dist_out = distance_transform_edt(~mask)
+        sdf = dist_in - dist_out
+
+        # Create smooth noise field
+        noise = np.random.randn(*mask.shape)
+        smooth_noise = gaussian_filter(noise, sigma=10.0)
+
+        # Normalize to unit std dev so 'perturb' controls magnitude in pixels
+        smooth_noise = smooth_noise / (np.std(smooth_noise) + 1e-8)
+
+        # Apply perturbation
+        sdf = sdf + smooth_noise * perturb
+
+        # Update mask
+        mask = sdf > 0
+        mask = binary_fill_holes(mask)
+
+    contours = measure.find_contours(mask, 0.5)
     if not contours:
         raise ValueError("No contours found in organelle segmentation")
 
@@ -119,6 +162,72 @@ def trim_data(image, contour, gt=None, margin=50):
     return image, contour, gt
 
 
+def generate_perturbed_dataset(real_path, output_path, trim_margin):
+    """
+    Generates a dataset containing the original real data and 4 perturbed versions.
+    Saves the dataset as a dictionary and a visualization of all perturbations.
+    """
+    perturbations = [
+        {"name": "original", "offset": 0, "perturb": 0.0},
+        {"name": "shrink_5_perturb_3", "offset": -5, "perturb": 3.0},
+        {"name": "shrink_10_perturb_5", "offset": -10, "perturb": 5.0},
+        {"name": "expand_5_perturb_3", "offset": 5, "perturb": 3.0},
+        {"name": "expand_10_perturb_5", "offset": 10, "perturb": 5.0},
+    ]
+
+    dataset = {}
+
+    # Setup visualization: 1 row, 5 columns
+    fig, axes = plt.subplots(1, 5, figsize=(20, 5))
+
+    for i, p in enumerate(perturbations):
+        name = p["name"]
+        offset = p["offset"]
+        perturb = p["perturb"]
+
+        logging.info(f"Generating sample '{name}' (offset={offset}, perturb={perturb})...")
+
+        try:
+            # Load and perturb
+            image, contour, gt = load_real_data(real_path, offset=offset, perturb=perturb)
+
+            # Trim
+            image, contour, gt = trim_data(image, contour, gt, trim_margin)
+
+            # Store in dataset
+            dataset[name] = {
+                "image": image,
+                "contour": contour,
+                "gt": gt,
+                "offset": offset,
+                "perturb": perturb,
+            }
+
+            # Visualize
+            ax = axes[i]
+            ax.imshow(image, cmap="gray")
+            ax.plot(contour[:, 1], contour[:, 0], "r-", linewidth=1, label="Init")
+            if gt is not None and len(gt) > 0:
+                ax.plot(gt[:, 1], gt[:, 0], "g--", linewidth=1, label="GT")
+
+            ax.set_title(f"{name}\nOff:{offset}, Pert:{perturb}", fontsize=9)
+            ax.axis("off")
+
+        except Exception as e:
+            logging.error(f"Failed to generate sample '{name}': {e}")
+
+    # Save the full dataset
+    joblib.dump(dataset, output_path)
+    logging.info(f"Full perturbed dataset saved to {output_path}")
+
+    # Save visualization
+    vis_path = output_path.with_name(f"{output_path.stem}.png")
+    plt.tight_layout()
+    plt.savefig(vis_path, dpi=150)
+    plt.close()
+    logging.info(f"Perturbation visualization saved to {vis_path}")
+
+
 @click.command()
 @click.option(
     "--real-path",
@@ -140,9 +249,37 @@ def trim_data(image, contour, gt=None, margin=50):
     default=50,
     help="Margin in pixels to trim around the segmentation.",
 )
-def main(real_path, synthetic, visualize, output, trim_margin):
+@click.option(
+    "--offset",
+    type=int,
+    default=0,
+    help="Morphological offset (shrink/expand) in pixels for real data.",
+)
+@click.option(
+    "--perturb",
+    type=float,
+    default=0.0,
+    help="Random perturbation magnitude in pixels for real data.",
+)
+@click.option(
+    "--generate-perturbations",
+    is_flag=True,
+    help="Generate a dataset with original and 4 perturbed versions (real data only).",
+)
+def main(
+    real_path, synthetic, visualize, output, trim_margin, offset, perturb, generate_perturbations
+):
     logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
     output.parent.mkdir(parents=True, exist_ok=True)
+
+    if generate_perturbations:
+        if not real_path.exists():
+            logging.error(
+                f"Real data file not found at {real_path}. Cannot generate perturbations."
+            )
+            return
+        generate_perturbed_dataset(real_path, output, trim_margin)
+        return
 
     image = None
     contour = None
@@ -150,7 +287,7 @@ def main(real_path, synthetic, visualize, output, trim_margin):
 
     if not synthetic and real_path.exists():
         try:
-            image, contour, gt = load_real_data(real_path)
+            image, contour, gt = load_real_data(real_path, offset=offset, perturb=perturb)
             logging.info("Successfully loaded real data.")
         except Exception as e:
             logging.warning(f"Failed to load real data: {e}. Falling back to synthetic.")

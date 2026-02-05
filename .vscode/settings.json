@@ -1,8 +1,66 @@
 {
+    "python.analysis.persistAllIndices": true,
+    // --- 2. FILE VISIBILITY ---
+    "files.exclude": {
+        "**/.pixi": true,
+        "**/__pycache__": true
+    },
+    // --- 3. CORE PYTHON SETUP ---
     "python.languageServer": "Pylance",
     "python.defaultInterpreterPath": "/workspace/diffmeshopt/.pixi/envs/default/bin/python",
     "python.terminal.activateEnvInCurrentTerminal": false,
+    "python.envFile": "${workspaceFolder}/.env",
+    // --- 4. FORMATTING & LINTING (Google/LLVM Style) ---
     "editor.formatOnSave": true,
+    "notebook.formatOnCellExecution": true,
+    "[python]": {
+        "editor.defaultFormatter": "charliermarsh.ruff",
+        "editor.codeActionsOnSave": {
+            "source.fixAll.ruff": "explicit",
+            "source.organizeImports.ruff": "explicit"
+        }
+    },
+    "notebook.codeActionsOnSave": {
+        "notebook.source.fixAll.ruff": "explicit",
+        "notebook.source.organizeImports.ruff": "explicit"
+    },
+    // --- 5. PYLANCE OPTIMIZATION ---
+    "python.analysis.diagnosticMode": "workspace",
+    "python.analysis.indexing": true,
+    "python.analysis.userFileIndexingLimit": 2000,
+    "python.analysis.useLibraryCodeForTypes": false,
+    "python.analysis.typeCheckingMode": "off",
+    "python.analysis.exclude": [
+        "**/node_modules",
+        "**/__pycache__",
+        "**/.*",
+        "**/data",
+        "**/output",
+        "**/.pixi"
+    ],
+    "python.analysis.packageIndexDepths": [
+        {
+            "name": "torch",
+            "depth": 2
+        },
+        {
+            "name": "matplotlib",
+            "depth": 2
+        },
+        {
+            "name": "",
+            "depth": 1
+        }
+    ],
+    "python.analysis.extraPaths": [],
+    // --- 6. PERFORMANCE WATCHERS ---
+    "files.watcherExclude": {
+        "**/.pixi/**": true,
+        "**/data/**": true,
+        "**/output/**": true,
+        "**/.*/**": true
+    },
+    // --- 7. EXTENSIONS ---
     "remote.defaultExtensionsIfInstalledLocally": [
         "GitHub.copilot",
         "GitHub.copilot-chat",
@@ -16,39 +74,8 @@
         "tamasfe.even-better-toml",
         "ms-toolsai.vscode-jupyter-powertoys"
     ],
-    "notebook.formatOnCellExecution": true,
-    "[python]": {
-        "editor.codeActionsOnSave": {
-            "source.fixAll.ruff": "explicit",
-            "source.organizeImports.ruff": "explicit"
-        }
-    },
-    "notebook.codeActionsOnSave": {
-        "notebook.source.fixAll.ruff": "explicit",
-        "notebook.source.organizeImports.ruff": "explicit"
-    },
-    "python.analysis.exclude": [
-        "**/node_modules",
-        "**/__pycache__",
-        "**/.*",
-        "**/data",
-        "**/output",
+    // Tells Jupyter to look for widget scripts in the extension itself
+    "jupyter.widgetScriptSources": [
+        "local"
     ],
-    // Stops Pylance from digging into the library code to find types
-    "python.analysis.useLibraryCodeForTypes": false,
-    // Reduces the depth of the "look ahead" analysis
-    "python.analysis.typeCheckingMode": "off",
-    "python.analysis.indexing": true,
-    "python.analysis.diagnosticMode": "openFilesOnly",
-    "python.analysis.userFileIndexingLimit": 500,
-    "files.watcherExclude": {
-        "**/.pixi/**": true,
-        "**/data/**": true,
-        "**/output/**": true
-    },
-    "python.envFile": "${workspaceFolder}/.env",
-    "python.analysis.extraPaths": [
-        "${workspaceFolder}"
-    ],
-    "python.analysis.persistAllIndices": false
 }

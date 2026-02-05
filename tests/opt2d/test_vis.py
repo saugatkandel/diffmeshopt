@@ -9,7 +9,7 @@ import pytest
 import torch
 
 from diffmeshopt.opt2d import vis
-from diffmeshopt.opt2d.props import ContourRefinerProps, TemplateProps
+from diffmeshopt.opt2d.config import ContourRefinerProps, TemplateProps
 
 
 @pytest.fixture

@@ -30,7 +30,11 @@ dependencies = [
     "polars>=1.37.1,<2",
     "rich>=14.2.0,<15",
     "tensorboard>=2.20.0,<3",
+    "optuna>=4.7.0,<5",
 ]
+
+[project.scripts]
+generate-2d-data = "diffmeshopt.opt2d.generate_2d_data:main"
 
 [project.optional-dependencies]
 notebook = [
@@ -93,7 +97,11 @@ python = "3.13.*"
 
 
 [tool.pixi.tasks]
-generate-data = "python diffmeshopt/opt2d/generate_2d_data.py"
+generate-single-image = "python -m diffmeshopt.opt2d.generate_2d_data"
+generate-perturbed-dataset = """
+    python -m diffmeshopt.opt2d.generate_2d_data \
+    --generate-perturbations \
+    --output /workspace/diffmeshopt/data/2d_training_data_perturbations.pkl"""
 pytest = "pytest tests/opt2d"
 
 [tool.pixi.environments]

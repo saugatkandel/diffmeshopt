@@ -23,8 +23,18 @@ class RegularizerType(Enum):
     NORMAL_CONSISTENCY = "normal_consistency"  # Normal/curvature smoothness (fairing)
 
     # Template parameter regularizers
-    TEMPLATE_PARAM_ANCHOR = "template_param_anchor"  # L2 proximity to initial parameter values
-    TEMPLATE_PARAM_LAPLACIAN = "template_param_laplacian"  # Laplacian spatial smoothness on params
+    # Anchors (L2 proximity to initialization)
+    ANCHOR_SIGMA = "anchor_sigma"
+    ANCHOR_PEAK_DIST = "anchor_peak_dist"
+    ANCHOR_SIGMA_RATIO = "anchor_sigma_ratio"
+    ANCHOR_AMP_RATIO = "anchor_amp_ratio"
+
+    # Smoothness (Laplacian/Spatial)
+    SMOOTH_SIGMA = "smooth_sigma"
+    SMOOTH_PEAK_DIST = "smooth_peak_dist"
+    SMOOTH_SIGMA_RATIO = "smooth_sigma_ratio"
+    SMOOTH_AMP_RATIO = "smooth_amp_ratio"
+
     TEMPLATE_SHAPE = "template_shape"  # Shape/profile consistency
 
 
@@ -63,11 +73,25 @@ class RegularizerDefaults:
             ),
             RegularizerType.EDGE_LENGTH: RegularizerConfig(static_weight=0.0, target_ratio=0.1),
             # Template parameter regularizers
-            RegularizerType.TEMPLATE_PARAM_ANCHOR: RegularizerConfig(
-                static_weight=0.1, target_ratio=0.01
+            RegularizerType.ANCHOR_SIGMA: RegularizerConfig(static_weight=0.0, target_ratio=0.0),
+            RegularizerType.ANCHOR_PEAK_DIST: RegularizerConfig(
+                static_weight=0.0, target_ratio=0.0
             ),
-            RegularizerType.TEMPLATE_PARAM_LAPLACIAN: RegularizerConfig(
+            RegularizerType.ANCHOR_SIGMA_RATIO: RegularizerConfig(
+                static_weight=0.0, target_ratio=0.01
+            ),
+            RegularizerType.ANCHOR_AMP_RATIO: RegularizerConfig(
+                static_weight=0.0, target_ratio=0.01
+            ),
+            RegularizerType.SMOOTH_SIGMA: RegularizerConfig(static_weight=1.0, target_ratio=0.05),
+            RegularizerType.SMOOTH_PEAK_DIST: RegularizerConfig(
                 static_weight=1.0, target_ratio=0.05
+            ),
+            RegularizerType.SMOOTH_SIGMA_RATIO: RegularizerConfig(
+                static_weight=1.0, target_ratio=0.05
+            ),
+            RegularizerType.SMOOTH_AMP_RATIO: RegularizerConfig(
+                static_weight=0.0, target_ratio=0.01
             ),
             RegularizerType.TEMPLATE_SHAPE: RegularizerConfig(static_weight=1.0, target_ratio=0.1),
         }
@@ -118,6 +142,15 @@ class AdaptiveRegularizationProps:
     """Configuration for adaptive regularization weight adjustment.
 
     Note: Target ratios are defined in RegularizerDefaults (single source of truth).
+
+    Parameters:
+        enabled (bool): Whether to enable adaptive weight adjustment.
+        update_interval (int): How often (in steps) to update weights.
+        ema_alpha (float): Exponential moving average factor for weight updates (0.0 to 1.0).
+                           Higher values mean faster adaptation, lower means smoother.
+        warmup_steps (int): Number of steps to wait before starting adaptation.
+        min_weight (float): Minimum allowed weight value to prevent collapse.
+        max_weight (float): Maximum allowed weight value to prevent explosion.
     """
 
     enabled: bool = False
@@ -143,6 +176,19 @@ class ContourRefinerProps:
     When adaptive_reg is None/disabled:
     - Uses static defaults from RegularizerDefaults
     - Can be overridden with initial_loss_weights
+
+    Parameters:
+        num_steps (int): Number of optimization steps.
+        learning_rate (float): Learning rate for the optimizer (Adam).
+        initial_loss_weights (dict): Overrides for default regularizer weights.
+                                     Keys should match RegularizerType values.
+        profile_length (int): Length of the sampled intensity profile in pixels.
+        profile_width (int): Width of the sampling strip (averaging across tangent).
+        sample_step (float): Step size between samples in the profile (usually 1.0 pixel).
+        num_sampled_profiles (int): Number of profiles to sample stochastically per step.
+        laplacian_window_size (int): Window size for Laplacian smoothing of the contour.
+        adaptive_reg (AdaptiveRegularizationProps | None): Configuration for adaptive weights.
+        _reg_defaults (RegularizerDefaults): Internal registry of default weights.
     """
 
     num_steps: int = 100
@@ -248,45 +294,42 @@ class RBFContourRefinerProps(ContourRefinerProps):
 class TemplateProps:
     """Configuration for template (bi-Gaussian intensity profile) models.
 
-    Template parameters define the characteristic double-peak intensity profile:
-    - peak_dist: Distance between the two Gaussian peaks
-    - sigma: Width of the Gaussians (symmetric) or sigma1 (asymmetric)
-    - amp: Amplitude of the Gaussians (symmetric) or amp1 (asymmetric)
-    - sigma_ratio: sigma2 = sigma1 * sigma_ratio (asymmetric only)
-    - amp_ratio: amp2 = amp1 * amp_ratio (asymmetric only)
+    Template parameters define the characteristic double-peak intensity profile.
 
-    Anchor flags control which parameters are regularized toward initialization:
-    - anchor_sigma: Keep sigma close to initial value (prevents collapse)
-    - anchor_peak_dist: Keep peak_dist close to initial value (rare - usually let vary)
-    - anchor_sigma_ratio: Keep sigma ratio close to initial value (asymmetric only)
-    - anchor_amp_ratio: Keep amp ratio close to initial value (asymmetric - rarely used)
+    Regularization weights are now handled via ContourRefinerProps.initial_loss_weights
+    using RegularizerType keys (e.g. "anchor_sigma", "smooth_peak_dist").
 
-    The anchor flags are used by template_model.get_regularization_loss() to compute
-    the template_param_anchor loss term, which is then weighted in ContourLoss.
+    Parameters:
+        sigma (float): Standard deviation (width) of the main Gaussian peak.
+                       Controls the blur/thickness of the membrane wall.
+        peak_dist (float): Distance between the centers of the two Gaussian peaks in pixels.
+                           Represents the membrane thickness.
+        min_peak_ratio (float): Constraint to prevent peaks from merging.
+                                Enforces peak_dist >= (sigma1 + sigma2) * (min_peak_ratio / 2.0).
+                                If symmetric, peak_dist >= sigma * min_peak_ratio.
+                                A value of 4.0 ensures peaks are separated by at least 4 sigmas.
+        sigma_ratio (float): Ratio of the second Gaussian's width to the first (sigma2 / sigma1).
+                             Only used if symmetric=False.
+        amp_ratio (float): Ratio of the second Gaussian's amplitude to the first (amp2 / amp1).
+                           Only used if symmetric=False.
+        symmetric (bool): If True, enforces sigma1=sigma2 and amp1=amp2.
+                          Symmetric templates often provide more stable gradients for positioning.
+        smoothness_window_size (int): Window size for spatial smoothness regularization of
+                                      template parameters (used in PerPoint models).
     """
 
     # Common parameters
     sigma: float = 0.75
     peak_dist: float = 4.5
-    amp: float = 1.0
-    min_peak_ratio: float = 4.0
+    min_peak_ratio: float = 2.0
     sigma_ratio: float = 1.0
     amp_ratio: float = 1.0
-    symmetric: bool = False
-    smoothness_window_size: int = 1
+    symmetric: bool = True
+    smoothness_window_size: int = 3
 
-    # Relative regularization weights per parameter (0.0 to disable)
-    # Anchoring: Keep close to initialization
-    anchor_sigma: float = 1.0
-    anchor_peak_dist: float = 0.0
-    anchor_sigma_ratio: float = 1.0
-    anchor_amp_ratio: float = 0.0
-
-    # Smoothing: Penalize spatial variation (Laplacian)
-    smooth_sigma: float = 1.0
-    smooth_peak_dist: float = 1.0
-    smooth_sigma_ratio: float = 1.0
-    smooth_amp_ratio: float = 1.0
+    @property
+    def amp(self) -> float:
+        return 1.0
 
     def model_copy(self, update: dict = None):
         if update is None:

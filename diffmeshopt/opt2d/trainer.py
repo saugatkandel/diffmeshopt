@@ -19,7 +19,7 @@ from lightning.pytorch.utilities import rank_zero_only
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 
-from diffmeshopt.opt2d.props import RegularizerType
+from diffmeshopt.opt2d.config import RegularizerType
 
 torch.set_float32_matmul_precision("medium")
 # --- 1. DATA LAYER: Atomic Parquet Logger ---
@@ -44,6 +44,7 @@ class TrainerConfig:
     calc_hausdorff: bool = False
     calc_p95: bool = False
     save_images: bool = True
+    enable_progress_bar: bool = True
 
 
 class AtomicParquetLogger(Logger):
@@ -139,37 +140,31 @@ class ContourLightningModule(pl_lightning.LightningModule):
     ):
         super().__init__()
         self.refiner = refiner
-        self.register_buffer("image_ref", torch.from_numpy(image).float(), persistent=False)
         self.log_interval = log_interval
-        self.gt_contour_raw = gt_contour
-        self.image_shape_raw = image_shape
         self.calc_chamfer = calc_chamfer
         self.calc_hausdorff = calc_hausdorff
         self.calc_p95 = calc_p95
 
-        self.gt_contour_ref = None
-        self.gt_distance_map = None
+        # 1. Register main image
+        self.register_buffer("image_ref", torch.from_numpy(image).float(), persistent=False)
 
-        self._setup_buffers()
+        # 2. Register GT Buffers as empty placeholders first (Fixes KeyError)
+        # persistent=True: Small contour data saved in checkpoint
+        # persistent=False: Large distance map stays in VRAM only
+        self.register_buffer("gt_contour_ref", torch.empty(0), persistent=True)
+        self.register_buffer("gt_distance_map", torch.empty(0), persistent=False)
 
-    def _setup_buffers(self) -> None:
-        if self.gt_contour_raw is None or len(self.gt_contour_raw) == 0:
-            return
+        # 3. Populate buffers only if data is provided
+        if gt_contour is not None and len(gt_contour) > 0:
+            # Updating existing buffer content is safe
+            self.gt_contour_ref = torch.from_numpy(gt_contour).float()
 
-        # persistent=True: Small data (contour) goes into checkpoint
-        self.register_buffer(
-            "gt_contour_ref", torch.from_numpy(self.gt_contour_raw).float(), persistent=True
-        )
+            if image_shape:
+                from diffmeshopt.opt2d.evaluation import compute_gt_distance_map
 
-        # persistent=False: Heavy data (distance map) stays in RAM, not on disk
-
-        if self.image_shape_raw:
-            from diffmeshopt.opt2d.evaluation import compute_gt_distance_map
-
-            gt_distance_map = compute_gt_distance_map(self.gt_contour_raw, self.image_shape_raw)
-
-            if gt_distance_map is not None:
-                self.register_buffer("gt_distance_map", gt_distance_map, persistent=False)
+                dist_map = compute_gt_distance_map(gt_contour, image_shape)
+                if dist_map is not None:
+                    self.gt_distance_map = dist_map
 
     def training_step(self, batch, batch_idx) -> torch.Tensor:
         # Sync step counter for adaptive logic
@@ -209,7 +204,8 @@ class ContourLightningModule(pl_lightning.LightningModule):
         with torch.no_grad():
             curr = self.refiner.contour
 
-            if self.gt_distance_map is not None:
+            # Use .numel() to check if the buffer is populated (size > 0)
+            if self.gt_distance_map.numel() > 0:
                 metrics = compute_metrics_from_map(
                     curr,
                     self.gt_distance_map,
@@ -217,10 +213,11 @@ class ContourLightningModule(pl_lightning.LightningModule):
                     calc_hausdorff=self.calc_hausdorff,
                     calc_p95=self.calc_p95,
                 )
-            elif self.gt_contour_ref is not None:
+            elif self.gt_contour_ref.numel() > 0:
                 metrics = compute_contour_metrics(curr, self.gt_contour_ref)
             else:
                 metrics = {}
+
             if metrics:
                 self.log_dict(metrics, prog_bar=True, on_step=True, on_epoch=False)
 
@@ -248,9 +245,9 @@ class ImageLoggerCallback(Callback):
         self.save_images = save_images
         if self.save_images:
             self.vis_dir.mkdir(parents=True, exist_ok=True)
-        self.num_crops = 16
-        self.crop_size = 50
-        self.crop_indices = None
+        self.num_crops = 16  # Grid of 4x4
+        self.crop_size = 60  # Size of each crop in pixels
+        self.crop_indices = None  # Indices of vertices to center crops on
         self.init_contour = None
 
     def on_train_start(self, trainer, pl_module):
@@ -259,11 +256,13 @@ class ImageLoggerCallback(Callback):
         with torch.no_grad():
             self.init_contour = pl_module.refiner.contour.detach().cpu().numpy()
 
+        # Select a fixed set of vertices to center the crops on for the entire run
         if len(self.init_contour) > 0:
             indices = list(range(len(self.init_contour)))
             if len(indices) >= self.num_crops:
                 self.crop_indices = random.sample(indices, self.num_crops)
             else:
+                # If contour is small, just repeat random points
                 self.crop_indices = [random.choice(indices) for _ in range(self.num_crops)]
         else:
             self.crop_indices = []
@@ -273,90 +272,51 @@ class ImageLoggerCallback(Callback):
             self._plot_and_save(pl_module, trainer.global_step, trainer)
 
     def create_figure(self, pl_module):
+        """Creates the default grid of cropped contour visualizations."""
+        from diffmeshopt.opt2d import vis
+
         if self.init_contour is None:
             self.on_train_start(None, pl_module)
 
         if not self.crop_indices:
             return None
 
-        rows, cols = 4, 4
-        fig, axes = plt.subplots(rows, cols, figsize=(8, 8), constrained_layout=True)
-        axes = axes.flatten()
-
-        H, W = self.image.shape[:2]
-        half_size = self.crop_size // 2
-
+        # --- 1. Get current contour and template parameters ---
         with torch.no_grad():
-            curr_contour = pl_module.refiner.contour.detach().cpu().numpy()
+            contour_tensor = pl_module.refiner.contour
+            curr_contour = contour_tensor.detach().cpu().numpy()
 
-        for i, ax in enumerate(axes):
-            if i >= len(self.crop_indices):
-                ax.axis("off")
-                continue
+            # Get full template params to draw peak/boundary lines
+            params = pl_module.refiner.template_model.get_params(coordinates=contour_tensor)
+            params_np = {
+                k: v.detach().cpu().numpy() if isinstance(v, torch.Tensor) else v
+                for k, v in params.items()
+            }
 
-            idx = self.crop_indices[i]
-            cy, cx = self.init_contour[idx]
-
-            y_min = max(0, int(cy - half_size))
-            y_max = min(H, int(cy + half_size))
-            x_min = max(0, int(cx - half_size))
-            x_max = min(W, int(cx + half_size))
-
-            ax.imshow(self.image, cmap="gray")
-
-            ax.plot(
-                self.init_contour[:, 1],
-                self.init_contour[:, 0],
-                "r--",
-                alpha=0.6,
-                linewidth=1.5,
-                label="Initial",
-            )
-            ax.plot(curr_contour[:, 1], curr_contour[:, 0], "b-", linewidth=2, label="Current")
-            if self.gt_contour is not None:
-                ax.plot(
-                    self.gt_contour[:, 1],
-                    self.gt_contour[:, 0],
-                    "k:",
-                    alpha=0.8,
-                    linewidth=2,
-                    label="GT",
-                )
-
-            ax.set_xlim(x_min, x_max)
-            ax.set_ylim(y_max, y_min)
-            ax.set_title(f"Crop {i}")
-            ax.axis("off")
-
-        handles, labels = axes[0].get_legend_handles_labels()
-        by_label = dict(zip(labels, handles))
-        fig.legend(
-            by_label.values(),
-            by_label.keys(),
-            loc="upper center",
-            ncol=3,
-            bbox_to_anchor=(0.5, 1.02),
+        return vis.plot_contour_crops(
+            image=self.image,
+            contour=curr_contour,
+            crop_indices=self.crop_indices,
+            init_contour=self.init_contour,
+            gt_contour=self.gt_contour,
+            crop_size=self.crop_size,
+            template_params=params_np,
+            num_cols=4,
         )
-        return fig
 
     def _plot_and_save(self, pl_module, step, trainer):
-        # matplotlib.use("Agg")
-        # import matplotlib.pyplot as plt
-
         fig = self.create_figure(pl_module)
         if fig is None:
             return
         try:
             for logger in trainer.loggers:
                 if isinstance(logger, TensorBoardLogger):
-                    logger.experiment.add_figure("vis", fig, global_step=step)
+                    logger.experiment.add_figure("vis/grid_view", fig, global_step=step)
 
             if self.save_images:
                 fig.savefig(self.vis_dir / f"step_{step:05d}.png", bbox_inches="tight")
         finally:
-            fig.clf()
             plt.close(fig)
-            del fig
 
 
 class StepWindowCallback(Callback):
@@ -449,12 +409,11 @@ class OptimizationTrainer:
             accelerator="auto",
             devices=1,
             enable_model_summary=False,
-            enable_progress_bar=True,
+            enable_progress_bar=self.config.enable_progress_bar,
         )
 
     def _setup_callbacks(self) -> list[Callback]:
         cbs = [
-            LiteTQDM(refresh_rate=10),
             ModelCheckpoint(
                 dirpath=self.output_dir,
                 save_last=True,
@@ -463,7 +422,10 @@ class OptimizationTrainer:
                 auto_insert_metric_name=False,
             ),
         ]
-        if self.config.image is not None and self.config.gt_contour is not None:
+        if self.config.enable_progress_bar:
+            cbs.insert(0, LiteTQDM(refresh_rate=10))
+
+        if self.config.image is not None:
             cbs.append(
                 ImageLoggerCallback(
                     self.config.image,
@@ -542,7 +504,26 @@ class OptimizationTrainer:
         metrics = [c for c in df.columns if c not in ("step", "epoch")]
 
         geo_keys = {"mean_dist", "hausdorff_dist", "p95_dist"}
-        loss_cols = [c for c in metrics if c not in geo_keys]
+
+        # Filter losses: exclude regularizers with weight 0
+        loss_cols = []
+        for c in metrics:
+            if c in geo_keys:
+                continue
+            if c in ("total_loss", "data_loss"):
+                loss_cols.append(c)
+                continue
+
+            # Check regularizer weight
+            if c.endswith("_loss"):
+                try:
+                    reg_type = RegularizerType(c[:-5])
+                    if self.refiner.loss_fn.get_weight(reg_type).item() == 0:
+                        continue
+                except (ValueError, AttributeError):
+                    pass
+            loss_cols.append(c)
+
         geo_cols = [c for c in metrics if c in geo_keys]
 
         markers = ["o", "s", "^", "v", "D", "x", "+"]
@@ -573,12 +554,60 @@ class OptimizationTrainer:
         return fig
 
     def plot_image(self):
-        """Plots the current image state using the ImageLoggerCallback logic."""
+        """Plots the default grid of cropped contour visualizations."""
         cb = next((c for c in self.trainer.callbacks if isinstance(c, ImageLoggerCallback)), None)
         if cb:
             fig = cb.create_figure(self.model)
             if fig is not None:
+                # Close the figure created by the callback to prevent double display
                 plt.close(fig)
             return fig
         print("ImageLoggerCallback not found.")
         return None
+
+    def plot_full_view(
+        self, plot_normals: bool = False, save_path: str | Path | None = None
+    ) -> Any:
+        """
+        Generates a large, detailed plot of the full contour state.
+
+        Args:
+            plot_normals (bool): If True, overlays the yellow normal lines. Defaults to False.
+            save_path (str | Path | None): Optional path to save the figure. If provided,
+                                           the figure is saved and not displayed.
+
+        Returns:
+            matplotlib.figure.Figure or None: The figure object for display in notebooks,
+                                              or None if `save_path` is provided.
+        """
+        fig, ax = plt.subplots(figsize=(12, 12))
+
+        # Use the refiner's high-level visualization function for core plotting
+        self.refiner.visualize_contour(
+            image=torch.from_numpy(self.config.image).float(),
+            ax=ax,
+            stochastic=False,  # Show full contour state
+            plot_normals=plot_normals,
+            title=f"Refinement @ Step {self.trainer.global_step}",
+        )
+
+        # Add GT and initial contours for context, sourcing them from the logger callback
+        cb = next((c for c in self.trainer.callbacks if isinstance(c, ImageLoggerCallback)), None)
+        if cb:
+            if cb.gt_contour is not None and len(cb.gt_contour) > 0:
+                ax.plot(cb.gt_contour[:, 1], cb.gt_contour[:, 0], "k:", label="GT")
+            if cb.init_contour is not None:
+                ax.plot(cb.init_contour[:, 1], cb.init_contour[:, 0], "r--", label="Initial")
+
+        # Consolidate legend to avoid duplicates
+        handles, labels = ax.get_legend_handles_labels()
+        by_label = dict(zip(labels, handles))
+        ax.legend(by_label.values(), by_label.keys())
+
+        if save_path:
+            fig.savefig(save_path, bbox_inches="tight")
+            plt.close(fig)
+            return None
+
+        plt.close(fig)  # Prevent double-display in notebooks
+        return fig

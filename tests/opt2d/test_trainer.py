@@ -14,7 +14,7 @@ import pytest
 import torch
 from lightning.pytorch.callbacks import ModelCheckpoint
 
-from diffmeshopt.opt2d.optimize import ContourRefinerBase
+from diffmeshopt.opt2d.refiner import ContourRefinerBase
 from diffmeshopt.opt2d.trainer import OptimizationTrainer, TrainerConfig
 
 

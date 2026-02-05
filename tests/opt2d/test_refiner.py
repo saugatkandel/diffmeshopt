@@ -1,13 +1,8 @@
 import pytest
 import torch
 
-from diffmeshopt.opt2d.optimize import (
-    BSplineContourRefiner,
-    ContourRefiner,
-    RBFContourRefiner,
-    TangentialSmoothingContourRefiner,
-)
-from diffmeshopt.opt2d.props import (
+from diffmeshopt.opt2d.config import (
+    AdaptiveRegularizationProps,
     BSplineContourRefinerProps,
     BSplineTemplateProps,
     ContourRefinerProps,
@@ -17,6 +12,12 @@ from diffmeshopt.opt2d.props import (
     RBFContourRefinerProps,
     RegularizerType,
     TemplateProps,
+)
+from diffmeshopt.opt2d.refiner import (
+    BSplineContourRefiner,
+    ContourRefiner,
+    RBFContourRefiner,
+    TangentialSmoothingContourRefiner,
 )
 from diffmeshopt.opt2d.template import TemplateModelFactory
 
@@ -206,3 +207,42 @@ def test_rbf_refiner_movement():
     # All points should have moved in x, even though we only have 2 control points
     # Because sigma is large, the movement should be roughly uniform +1
     assert torch.all(new_contour[:, 0] > 0.5)
+
+
+def test_adaptive_regularization_updates():
+    """Test that adaptive regularization weights change during optimization."""
+    # Setup a simple problem with non-zero regularization loss
+    initial_contour = torch.randn(10, 2) + 10.0  # Random contour centered in image
+    image = torch.zeros(1, 1, 20, 20)
+
+    # Enable adaptive regularization
+    adaptive_props = AdaptiveRegularizationProps(
+        enabled=True,
+        update_interval=1,
+        warmup_steps=0,
+        ema_alpha=1.0,  # Instant update for testing
+    )
+
+    props = ContourRefinerProps(
+        num_steps=5,
+        adaptive_reg=adaptive_props,
+        initial_loss_weights={
+            RegularizerType.CONTOUR_LAPLACIAN.value: 1.0,
+        },
+        profile_length=5,  # Small profile to stay within bounds
+    )
+
+    template_model = TemplateModelFactory.create("fixed", props=TemplateProps())
+    refiner = ContourRefiner(initial_contour, props, template_model)
+
+    # Initial weight
+    initial_w = refiner.loss_fn.get_weight(RegularizerType.CONTOUR_LAPLACIAN).item()
+    assert initial_w == 1.0
+
+    # Run one step
+    refiner.step(image)
+
+    # Weight should have changed
+    # (Data loss is 1.0 on flat image, reg loss is high on random contour -> weight should adjust)
+    new_w = refiner.loss_fn.get_weight(RegularizerType.CONTOUR_LAPLACIAN).item()
+    assert new_w != initial_w

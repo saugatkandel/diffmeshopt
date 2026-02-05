@@ -15,7 +15,7 @@ Usage:
     props.initial_loss_weights["normal_consistency"] = 3.0
 """
 
-from diffmeshopt.opt2d.props import RegularizerType
+from diffmeshopt.opt2d.config import RegularizerType
 
 # ============================================================================
 # Standard Configurations
@@ -27,8 +27,11 @@ STANDARD = {
     RegularizerType.TANGENTIAL_LAPLACIAN.value: 1.0,
     RegularizerType.NORMAL_CONSISTENCY.value: 1.0,
     RegularizerType.EDGE_LENGTH.value: 0.0,
-    RegularizerType.TEMPLATE_PARAM_ANCHOR.value: 0.1,
-    RegularizerType.TEMPLATE_PARAM_LAPLACIAN.value: 1.0,
+    # Template params
+    RegularizerType.ANCHOR_SIGMA.value: 0.0,
+    RegularizerType.ANCHOR_PEAK_DIST.value: 0.0,
+    RegularizerType.SMOOTH_SIGMA.value: 1.0,
+    RegularizerType.SMOOTH_PEAK_DIST.value: 1.0,
     RegularizerType.TEMPLATE_SHAPE.value: 1.0,
 }
 
@@ -38,8 +41,10 @@ MINIMAL = {
     RegularizerType.TANGENTIAL_LAPLACIAN.value: 0.0,
     RegularizerType.NORMAL_CONSISTENCY.value: 0.0,
     RegularizerType.EDGE_LENGTH.value: 0.0,
-    RegularizerType.TEMPLATE_PARAM_ANCHOR.value: 0.01,
-    RegularizerType.TEMPLATE_PARAM_LAPLACIAN.value: 0.1,
+    # Template params
+    RegularizerType.ANCHOR_SIGMA.value: 0.0,
+    RegularizerType.SMOOTH_SIGMA.value: 0.1,
+    RegularizerType.SMOOTH_PEAK_DIST.value: 0.1,
     RegularizerType.TEMPLATE_SHAPE.value: 0.1,
 }
 
@@ -55,8 +60,10 @@ TANGENTIAL_SMOOTHING_VERTEX = {
     RegularizerType.TANGENTIAL_LAPLACIAN.value: 5.0,  # Primary: even point spacing
     RegularizerType.NORMAL_CONSISTENCY.value: 2.0,  # Secondary: smooth curvature
     RegularizerType.EDGE_LENGTH.value: 0.0,  # Disabled
-    RegularizerType.TEMPLATE_PARAM_ANCHOR.value: 0.1,  # Standard template weights
-    RegularizerType.TEMPLATE_PARAM_LAPLACIAN.value: 1.0,
+    # Template params
+    RegularizerType.ANCHOR_SIGMA.value: 0.0,
+    RegularizerType.SMOOTH_SIGMA.value: 1.0,
+    RegularizerType.SMOOTH_PEAK_DIST.value: 1.0,
     RegularizerType.TEMPLATE_SHAPE.value: 1.0,
 }
 
@@ -67,8 +74,10 @@ TANGENTIAL_SMOOTHING_BSPLINE = {
     RegularizerType.TANGENTIAL_LAPLACIAN.value: 5.0,
     RegularizerType.NORMAL_CONSISTENCY.value: 0.5,  # Weaker for B-splines
     RegularizerType.EDGE_LENGTH.value: 0.0,
-    RegularizerType.TEMPLATE_PARAM_ANCHOR.value: 0.1,
-    RegularizerType.TEMPLATE_PARAM_LAPLACIAN.value: 1.0,
+    # Template params
+    RegularizerType.ANCHOR_SIGMA.value: 0.0,
+    RegularizerType.SMOOTH_SIGMA.value: 1.0,
+    RegularizerType.SMOOTH_PEAK_DIST.value: 1.0,
     RegularizerType.TEMPLATE_SHAPE.value: 1.0,
 }
 
@@ -79,8 +88,10 @@ TANGENTIAL_SMOOTHING_RBF = {
     RegularizerType.TANGENTIAL_LAPLACIAN.value: 5.0,
     RegularizerType.NORMAL_CONSISTENCY.value: 0.1,  # Much weaker for RBF
     RegularizerType.EDGE_LENGTH.value: 0.0,
-    RegularizerType.TEMPLATE_PARAM_ANCHOR.value: 0.1,
-    RegularizerType.TEMPLATE_PARAM_LAPLACIAN.value: 1.0,
+    # Template params
+    RegularizerType.ANCHOR_SIGMA.value: 0.0,
+    RegularizerType.SMOOTH_SIGMA.value: 1.0,
+    RegularizerType.SMOOTH_PEAK_DIST.value: 1.0,
     RegularizerType.TEMPLATE_SHAPE.value: 1.0,
 }
 
@@ -95,8 +106,10 @@ STRONG_SMOOTHING = {
     RegularizerType.TANGENTIAL_LAPLACIAN.value: 2.0,
     RegularizerType.NORMAL_CONSISTENCY.value: 3.0,
     RegularizerType.EDGE_LENGTH.value: 1.0,
-    RegularizerType.TEMPLATE_PARAM_ANCHOR.value: 0.5,
-    RegularizerType.TEMPLATE_PARAM_LAPLACIAN.value: 2.0,
+    # Template params
+    RegularizerType.ANCHOR_SIGMA.value: 0.0,
+    RegularizerType.SMOOTH_SIGMA.value: 2.0,
+    RegularizerType.SMOOTH_PEAK_DIST.value: 2.0,
     RegularizerType.TEMPLATE_SHAPE.value: 2.0,
 }
 
@@ -106,11 +119,22 @@ DATA_DRIVEN = {
     RegularizerType.TANGENTIAL_LAPLACIAN.value: 0.1,
     RegularizerType.NORMAL_CONSISTENCY.value: 0.1,
     RegularizerType.EDGE_LENGTH.value: 0.0,
-    RegularizerType.TEMPLATE_PARAM_ANCHOR.value: 0.01,
-    RegularizerType.TEMPLATE_PARAM_LAPLACIAN.value: 0.1,
+    # Template params
+    RegularizerType.ANCHOR_SIGMA.value: 0.0,
+    RegularizerType.SMOOTH_SIGMA.value: 0.1,
+    RegularizerType.SMOOTH_PEAK_DIST.value: 0.1,
     RegularizerType.TEMPLATE_SHAPE.value: 0.1,
 }
 
+
+ANCHORED_SIGMA = STANDARD.copy()
+ANCHORED_SIGMA[RegularizerType.ANCHOR_SIGMA.value] = 0.1
+
+ANCHORED_ALL = STANDARD.copy()
+ANCHORED_ALL[RegularizerType.ANCHOR_SIGMA.value] = 0.1
+ANCHORED_ALL[RegularizerType.ANCHOR_PEAK_DIST.value] = 0.1
+ANCHORED_ALL[RegularizerType.ANCHOR_SIGMA_RATIO.value] = 0.1
+ANCHORED_ALL[RegularizerType.ANCHOR_AMP_RATIO.value] = 0.1
 
 # ============================================================================
 # Quick Reference Guide
@@ -124,6 +148,8 @@ RECIPES_BY_USE_CASE = {
     "noisy_data": STRONG_SMOOTHING,
     "clean_data": DATA_DRIVEN,
     "minimal": MINIMAL,
+    "anchored_sigma": ANCHORED_SIGMA,
+    "anchored_all": ANCHORED_ALL,
 }
 
 
@@ -164,7 +190,6 @@ from diffmeshopt.opt2d.template import TemplateModelFactory
 
 # Setup template with per-point parameters
 template_props = TemplateProps(
-    mode="per_point",
     sigma=2.0,
     peak_dist=10.0,
     symmetric=True
@@ -194,34 +219,27 @@ refiner = BSplineContourRefiner(
     print("ADVANCED: Anchor only specific params (e.g., sigma only)")
     print("=" * 60)
     print("""
-# To anchor only sigma but not sigma_ratio or amp_ratio, use TemplateProps flags:
-# Anchor flags are supported by ALL template models:
-#   - GlobalOptimizableTemplateModel: anchors global parameters
-#   - PerPointTemplateModel: anchors per-point parameters
-#   - BSplineTemplateModel: anchors B-spline control points
-#   - NeuralFieldTemplateModel: anchors network output weights
-#   - GridTemplateModel: anchors grid values (residuals)
-#   - GaussianSplatTemplateModel: anchors splat payloads (residuals)
-# 
+# To anchor only sigma but not sigma_ratio or amp_ratio, use RegularizerType weights:
+# Anchor weights are now controlled via initial_loss_weights in ContourRefinerProps.
+#   - ANCHOR_SIGMA: anchors sigma to initialization
+#   - ANCHOR_PEAK_DIST: anchors peak_dist to initialization
+#   - ANCHOR_SIGMA_RATIO: anchors sigma_ratio (asymmetry)
+#   - ANCHOR_AMP_RATIO: anchors amp_ratio (asymmetry)
+#
 # For implicit models (NeuralField, Grid, GaussianSplat), anchoring penalizes
 # the learned residuals to stay small, keeping decoded parameters near initialization.
 
 from diffmeshopt.opt2d.props import TemplateProps
 from diffmeshopt.opt2d.template import TemplateModelFactory
 
-# Configure template to anchor only sigma
+# Configure template
 template_props = TemplateProps(
     sigma=2.0,
     peak_dist=10.0,
-    symmetric=False,
-    # Control which parameters get anchored:
-    anchor_sigma=1.0,         # Anchor sigma to initial value (2.0)
-    anchor_peak_dist=0.0,     # Let peak_dist vary freely
-    anchor_sigma_ratio=0.0,   # Let sigma_ratio vary freely
-    anchor_amp_ratio=0.0      # Let amp_ratio vary freely
+    symmetric=False
 )
 
-# Create template - it automatically respects anchor flags
+# Create template
 template = TemplateModelFactory.create(
     mode="per_point",
     props=template_props,
@@ -237,8 +255,11 @@ props = BSplineContourRefinerProps(
         RegularizerType.TANGENTIAL_LAPLACIAN.value: 5.0,
         RegularizerType.NORMAL_CONSISTENCY.value: 0.5,
         RegularizerType.CONTOUR_LAPLACIAN.value: 0.0,
-        RegularizerType.TEMPLATE_PARAM_ANCHOR.value: 1.0,    # Strong anchor
-        RegularizerType.TEMPLATE_PARAM_LAPLACIAN.value: 0.1,  # Weak smoothing
+        # Control which parameters get anchored:
+        RegularizerType.ANCHOR_SIGMA.value: 1.0,      # Anchor sigma
+        RegularizerType.ANCHOR_PEAK_DIST.value: 0.0,  # Free peak_dist
+        RegularizerType.ANCHOR_SIGMA_RATIO.value: 0.0,# Free asymmetry
+        RegularizerType.SMOOTH_SIGMA.value: 0.1,      # Weak smoothing on sigma
     }
 )
 
@@ -250,5 +271,4 @@ refiner = BSplineContourRefiner(
 
 # Result: Only sigma stays close to initialization (2.0)
 #         sigma_ratio and amp_ratio vary freely (only smoothness constraint)
-#         No custom template class needed!
     """)

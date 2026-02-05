@@ -2,18 +2,18 @@ import numpy as np
 import pytest
 import torch
 
-from diffmeshopt.opt2d.optimize import (
-    BSplineContourRefiner,
-    ContourRefiner,
-    RBFContourRefiner,
-    TangentialSmoothingContourRefiner,
-)
-from diffmeshopt.opt2d.props import (
+from diffmeshopt.opt2d.config import (
     BSplineContourRefinerProps,
     ContourRefinerProps,
     RBFContourRefinerProps,
     RegularizerType,
     TemplateProps,
+)
+from diffmeshopt.opt2d.refiner import (
+    BSplineContourRefiner,
+    ContourRefiner,
+    RBFContourRefiner,
+    TangentialSmoothingContourRefiner,
 )
 from diffmeshopt.opt2d.template import TemplateModelFactory
 
@@ -54,8 +54,10 @@ def test_optimization_convergence():
             RegularizerType.EDGE_LENGTH.value: 0.0,
             RegularizerType.TANGENTIAL_LAPLACIAN.value: 0.0,
             RegularizerType.NORMAL_CONSISTENCY.value: 0.0,
-            RegularizerType.TEMPLATE_PARAM_ANCHOR.value: 0.0,
-            RegularizerType.TEMPLATE_PARAM_LAPLACIAN.value: 0.0,
+            RegularizerType.ANCHOR_SIGMA.value: 0.0,
+            RegularizerType.ANCHOR_PEAK_DIST.value: 0.0,
+            RegularizerType.SMOOTH_SIGMA.value: 0.0,
+            RegularizerType.SMOOTH_PEAK_DIST.value: 0.0,
             RegularizerType.TEMPLATE_SHAPE.value: 0.0,
         },
         # Sampling props
@@ -113,8 +115,10 @@ def test_tangential_smoothing_convergence():
             RegularizerType.NORMAL_CONSISTENCY.value: 0.1,
             RegularizerType.CONTOUR_LAPLACIAN.value: 0.0,
             RegularizerType.EDGE_LENGTH.value: 0.0,
-            RegularizerType.TEMPLATE_PARAM_ANCHOR.value: 0.0,
-            RegularizerType.TEMPLATE_PARAM_LAPLACIAN.value: 0.0,
+            RegularizerType.ANCHOR_SIGMA.value: 0.0,
+            RegularizerType.ANCHOR_PEAK_DIST.value: 0.0,
+            RegularizerType.SMOOTH_SIGMA.value: 0.0,
+            RegularizerType.SMOOTH_PEAK_DIST.value: 0.0,
             RegularizerType.TEMPLATE_SHAPE.value: 0.0,
         },
         profile_length=21,
@@ -166,8 +170,10 @@ def test_bspline_convergence():
             RegularizerType.EDGE_LENGTH.value: 0.0,
             RegularizerType.TANGENTIAL_LAPLACIAN.value: 0.0,
             RegularizerType.NORMAL_CONSISTENCY.value: 0.0,
-            RegularizerType.TEMPLATE_PARAM_ANCHOR.value: 0.0,
-            RegularizerType.TEMPLATE_PARAM_LAPLACIAN.value: 0.0,
+            RegularizerType.ANCHOR_SIGMA.value: 0.0,
+            RegularizerType.ANCHOR_PEAK_DIST.value: 0.0,
+            RegularizerType.SMOOTH_SIGMA.value: 0.0,
+            RegularizerType.SMOOTH_PEAK_DIST.value: 0.0,
             RegularizerType.TEMPLATE_SHAPE.value: 0.0,
         },
         profile_length=21,
@@ -219,8 +225,10 @@ def test_rbf_convergence():
             RegularizerType.EDGE_LENGTH.value: 0.0,
             RegularizerType.TANGENTIAL_LAPLACIAN.value: 0.0,
             RegularizerType.NORMAL_CONSISTENCY.value: 0.0,
-            RegularizerType.TEMPLATE_PARAM_ANCHOR.value: 0.0,
-            RegularizerType.TEMPLATE_PARAM_LAPLACIAN.value: 0.0,
+            RegularizerType.ANCHOR_SIGMA.value: 0.0,
+            RegularizerType.ANCHOR_PEAK_DIST.value: 0.0,
+            RegularizerType.SMOOTH_SIGMA.value: 0.0,
+            RegularizerType.SMOOTH_PEAK_DIST.value: 0.0,
             RegularizerType.TEMPLATE_SHAPE.value: 0.0,
         },
         profile_length=21,

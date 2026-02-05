@@ -1,6 +1,6 @@
 """Test the unified configuration system for regularization weights."""
 
-from diffmeshopt.opt2d.props import (
+from diffmeshopt.opt2d.config import (
     AdaptiveRegularizationProps,
     ContourRefinerProps,
     RegularizerDefaults,
@@ -17,8 +17,8 @@ def test_default_weights():
     assert props.get_initial_weight("tangential_laplacian") == 1.0
     assert props.get_initial_weight("normal_consistency") == 1.0
     assert props.get_initial_weight("contour_laplacian") == 0.0
-    assert props.get_initial_weight("template_param_anchor") == 0.1
-    assert props.get_initial_weight("template_param_laplacian") == 1.0
+    assert props.get_initial_weight("anchor_sigma") == 0.0
+    assert props.get_initial_weight("smooth_sigma") == 1.0
 
 
 def test_target_ratios():
@@ -28,8 +28,9 @@ def test_target_ratios():
     # Check target ratios from RegularizerDefaults
     assert props.get_target_ratio("tangential_laplacian") == 0.1
     assert props.get_target_ratio("normal_consistency") == 0.1
-    assert props.get_target_ratio("template_param_anchor") == 0.01
-    assert props.get_target_ratio("template_param_laplacian") == 0.05
+    assert props.get_target_ratio("anchor_sigma") == 0.0
+    assert props.get_target_ratio("anchor_peak_dist") == 0.0
+    assert props.get_target_ratio("smooth_sigma") == 0.05
 
 
 def test_explicit_overrides():
@@ -43,7 +44,7 @@ def test_explicit_overrides():
 
     assert props.get_initial_weight("tangential_laplacian") == 5.0  # Uses explicit
     assert props.get_initial_weight("normal_consistency") == 2.0  # Uses explicit
-    assert props.get_initial_weight("template_param_anchor") == 0.1  # Falls back to default
+    assert props.get_initial_weight("anchor_sigma") == 0.0  # Falls back to default
 
 
 def test_dict_access():
@@ -53,7 +54,7 @@ def test_dict_access():
     # Read via method
     assert props.get_initial_weight("tangential_laplacian") == 1.0
     assert props.get_initial_weight("normal_consistency") == 1.0
-    assert props.get_initial_weight("template_param_anchor") == 0.1
+    assert props.get_initial_weight("anchor_sigma") == 0.0
 
     # Write via dict
     props.initial_loss_weights["tangential_laplacian"] = 3.0
@@ -84,7 +85,7 @@ def test_regularizer_config_structure():
     # Check structure
     assert RegularizerType.TANGENTIAL_LAPLACIAN in defaults.regularizers
     assert RegularizerType.NORMAL_CONSISTENCY in defaults.regularizers
-    assert RegularizerType.TEMPLATE_PARAM_ANCHOR in defaults.regularizers
+    assert RegularizerType.ANCHOR_SIGMA in defaults.regularizers
 
     # Check each config has both fields
     tangential_config = defaults.regularizers[RegularizerType.TANGENTIAL_LAPLACIAN]
@@ -101,7 +102,7 @@ def test_enum_usage():
     # Test enum usage
     assert props.get_initial_weight(RegularizerType.TANGENTIAL_LAPLACIAN) == 1.0
     assert props.get_initial_weight(RegularizerType.NORMAL_CONSISTENCY) == 1.0
-    assert props.get_target_ratio(RegularizerType.TEMPLATE_PARAM_ANCHOR) == 0.01
+    assert props.get_target_ratio(RegularizerType.ANCHOR_SIGMA) == 0.0
 
     # Test string still works (backward compatibility)
     assert props.get_initial_weight("tangential_laplacian") == 1.0

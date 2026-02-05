@@ -6,9 +6,9 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+from diffmeshopt.opt2d.config import RegularizerType, TemplateProps
 from diffmeshopt.opt2d.geometry import compute_cubic_bspline_weights, get_bspline_matrix
 from diffmeshopt.opt2d.loss import LaplacianSmoothingLoss
-from diffmeshopt.opt2d.props import RegularizerType, TemplateProps
 
 
 class TemplateMode(Enum):
@@ -109,44 +109,9 @@ class BaseTemplateModel(nn.Module, abc.ABC):
     def get_regularization_loss(self) -> dict[str, torch.Tensor]:
         return {}
 
-    def _get_channel_weights(self, prefix: str = "anchor") -> list[float]:
-        """Map props weights to parameter indices for residual-based models.
-
-        Args:
-            prefix: 'anchor' or 'smooth' to select the type of weight.
-
-        Returns:
-            List of floats indicating relative weight for each parameter channel:
-            - Symmetric: 3 params [peak_dist, sigma, amp]
-            - Asymmetric: 5 params [peak_dist, sigma1, sigma2, amp1, amp2]
-        """
-
-        # Helper to get value safely
-        def get_w(name):
-            return getattr(self.props, f"{prefix}_{name}", 0.0)
-
-        # Note: amp/amp1/amp2 usually don't have explicit smooth/anchor props in the
-        # simplified list, defaulting to 0.0 or 1.0 as appropriate.
-        # For now, we assume amp is not heavily regularized or uses defaults.
-
-        if self.props.symmetric:
-            return [
-                get_w("peak_dist"),  # Channel 0: peak_dist
-                get_w("sigma"),  # Channel 1: sigma1
-                0.0,  # Channel 2: amp1
-            ]
-        else:
-            return [
-                get_w("peak_dist"),  # Channel 0: peak_dist
-                get_w("sigma"),  # Channel 1: sigma1
-                get_w("sigma_ratio"),  # Channel 2: sigma2
-                0.0,  # Channel 3: amp1
-                get_w("amp_ratio"),  # Channel 4: amp2
-            ]
-
     def _compute_channel_anchor_loss(
         self, learned_corrections: torch.Tensor, param_dim: int
-    ) -> torch.Tensor:
+    ) -> dict[str, torch.Tensor]:
         """Anchor learned parameter corrections toward zero (residual-based models).
 
         Residual models learn additive corrections to initialization values.
@@ -168,61 +133,80 @@ class BaseTemplateModel(nn.Module, abc.ABC):
                       - param_dim=1: parameter types are feature dimension (grids/payloads)
 
         Returns:
-            Scalar anchor loss (L2 penalty on selected parameter type corrections)
+            Dict of scalar anchor losses per parameter type
         """
-        anchor_loss = torch.tensor(0.0, device=learned_corrections.device)
-        weights = self._get_channel_weights("anchor")
+        losses = {}
 
-        for param_idx, weight in enumerate(weights):
-            if weight > 0:
-                if param_dim == 0:  # Weight matrix: params indexed by rows
-                    anchor_loss = anchor_loss + learned_corrections[param_idx].pow(2).mean()
-                elif param_dim == 1:  # Grid/payloads: params indexed by feature dimension
-                    anchor_loss = anchor_loss + learned_corrections[:, param_idx].pow(2).mean()
+        # Define channel mapping based on symmetry
+        if self.props.symmetric:
+            # 2 params: [peak_dist, sigma]
+            channels = [
+                (0, RegularizerType.ANCHOR_PEAK_DIST),
+                (1, RegularizerType.ANCHOR_SIGMA),
+            ]
+        else:
+            # 4 params: [peak_dist, sigma1, sigma2, amp2]
+            # Note: sigma2 corresponds to sigma_ratio, amp2 to amp_ratio in terms of regularization intent
+            channels = [
+                (0, RegularizerType.ANCHOR_PEAK_DIST),
+                (1, RegularizerType.ANCHOR_SIGMA),
+                (2, RegularizerType.ANCHOR_SIGMA_RATIO),
+                (3, RegularizerType.ANCHOR_AMP_RATIO),
+            ]
 
-        return anchor_loss
+        for idx, reg_type in channels:
+            if param_dim == 0:  # Weight matrix: params indexed by rows
+                loss = learned_corrections[idx].pow(2).mean()
+            elif param_dim == 1:  # Grid/payloads: params indexed by feature dimension
+                loss = learned_corrections[:, idx].pow(2).mean()
+            else:
+                raise ValueError(f"Unsupported param_dim: {param_dim}")
 
-    def _compute_explicit_param_anchor(self) -> torch.Tensor:
+            losses[reg_type.value] = loss
+
+        return losses
+
+    def _compute_explicit_param_anchor(self) -> dict[str, torch.Tensor]:
         """Anchor explicit parameters toward their initialization values.
 
         Explicit models (Global, PerPoint) store parameters directly as learnable tensors.
-        This method penalizes deviations from initial values based on anchor flags.
+        This method penalizes deviations from initial values.
 
         Used by:
             - GlobalOptimizableTemplateModel (single global parameters)
             - PerPointTemplateModel (per-vertex parameters)
 
         Returns:
-            Scalar anchor loss (L2 penalty on log-space parameter deviations)
+            Dict of scalar anchor losses per parameter type
         """
-        prior = torch.tensor(0.0, device=self.sigma_init.device)
+        losses = {}
 
-        if self.props.anchor_sigma > 0:
-            loss = (self.log_sigma - self.sigma_init.log()).pow(2).mean()
-            prior = prior + loss * self.props.anchor_sigma
+        # Sigma
+        losses[RegularizerType.ANCHOR_SIGMA.value] = (
+            (self.log_sigma - self.sigma_init.log()).pow(2).mean()
+        )
 
-        if self.props.anchor_peak_dist > 0:
-            # Reconstruct current peak_dist
-            sigma1 = self.log_sigma.exp()
-            if self.props.symmetric:
-                sigma2 = sigma1
-            else:
-                sigma2 = sigma1 * self.log_sigma_ratio.exp()
-            peak_dist = (sigma1 + sigma2) * (
-                self.props.min_peak_ratio / 2.0 + self.log_excess.exp()
-            )
-            loss = (peak_dist.log() - self.peak_dist_init.log()).pow(2).mean()
-            prior = prior + loss * self.props.anchor_peak_dist
+        # Peak Dist
+        # Reconstruct current peak_dist
+        sigma1 = self.log_sigma.exp()
+        if self.props.symmetric:
+            sigma2 = sigma1
+        else:
+            sigma2 = sigma1 * self.log_sigma_ratio.exp()
+        peak_dist = (sigma1 + sigma2) * (self.props.min_peak_ratio / 2.0 + self.log_excess.exp())
+        losses[RegularizerType.ANCHOR_PEAK_DIST.value] = (
+            (peak_dist.log() - self.peak_dist_init.log()).pow(2).mean()
+        )
 
         if not self.props.symmetric:
-            if self.props.anchor_sigma_ratio > 0:
-                loss = (self.log_sigma_ratio - self.sigma_ratio_init.log()).pow(2).mean()
-                prior = prior + loss * self.props.anchor_sigma_ratio
-            if self.props.anchor_amp_ratio > 0:
-                loss = (self.log_amp_ratio - self.amp_ratio_init.log()).pow(2).mean()
-                prior = prior + loss * self.props.anchor_amp_ratio
+            losses[RegularizerType.ANCHOR_SIGMA_RATIO.value] = (
+                (self.log_sigma_ratio - self.sigma_ratio_init.log()).pow(2).mean()
+            )
+            losses[RegularizerType.ANCHOR_AMP_RATIO.value] = (
+                (self.log_amp_ratio - self.amp_ratio_init.log()).pow(2).mean()
+            )
 
-        return prior
+        return losses
 
     def set_topology(self, edges: torch.Tensor | None) -> None:
         """
@@ -241,8 +225,8 @@ class BaseTemplateModel(nn.Module, abc.ABC):
         Args:
             learned_corrections: (N, num_params) tensor of additive corrections in log-space.
                                 num_params = number of parameter types:
-                                  - 3 for symmetric: [peak_dist, sigma, amp]
-                                  - 5 for asymmetric: [peak_dist, sigma1, sigma2, amp1, amp2]
+                                  - 2 for symmetric: [peak_dist, sigma]
+                                  - 4 for asymmetric: [peak_dist, sigma1, sigma2, amp2]
 
         Returns:
             Dictionary with decoded parameters: peak_dist, sigma1, sigma2, amp1, amp2
@@ -258,23 +242,23 @@ class BaseTemplateModel(nn.Module, abc.ABC):
             return torch.max(peak_dist, min_dist)
 
         if self.props.symmetric:
-            # Symmetric: learn 3 corrections [peak_dist, sigma, amp]
+            # Symmetric: learn 2 corrections [peak_dist, sigma]
             peak_dist = (log_peak_init + learned_corrections[:, 0]).exp()
             sigma1 = (log_sigma_init + learned_corrections[:, 1]).exp()
             sigma2 = sigma1  # Symmetric: sigma2 = sigma1
 
             peak_dist = enforce_min_separation(peak_dist, sigma1, sigma2)
 
-            amp = (log_amp_init + learned_corrections[:, 2]).exp()
+            amp = self.amp_init.expand(learned_corrections.shape[0])
             return {
                 "peak_dist": peak_dist,
                 "sigma1": sigma1,
                 "sigma2": sigma2,
                 "amp1": amp,
-                "amp2": amp,  # Symmetric: amp2 = amp1
+                "amp2": amp,
             }
         else:
-            # Asymmetric: learn 5 corrections [peak_dist, sigma1, sigma2, amp1, amp2]
+            # Asymmetric: learn 4 corrections [peak_dist, sigma1, sigma2, amp2]
             log_sigma2_init = (self.sigma_init * self.sigma_ratio_init).log()
             log_amp2_init = (self.amp_init * self.amp_ratio_init).log()
 
@@ -288,8 +272,8 @@ class BaseTemplateModel(nn.Module, abc.ABC):
                 "peak_dist": peak_dist,
                 "sigma1": sigma1,
                 "sigma2": sigma2,
-                "amp1": (log_amp_init + learned_corrections[:, 3]).exp(),
-                "amp2": (log_amp2_init + learned_corrections[:, 4]).exp(),
+                "amp1": self.amp_init.expand(learned_corrections.shape[0]),
+                "amp2": (log_amp2_init + learned_corrections[:, 3]).exp(),
             }
 
 
@@ -365,11 +349,8 @@ class GlobalOptimizableTemplateModel(BaseTemplateModel):
         }
 
     def get_regularization_loss(self) -> dict[str, torch.Tensor]:
-        """Weak prior to stay near initialization (respects anchor flags)."""
-        prior = self._compute_explicit_param_anchor()
-        return {
-            RegularizerType.TEMPLATE_PARAM_ANCHOR.value: prior * 0.1
-        }  # Proximal reg: keep params near initialization
+        """Weak prior to stay near initialization."""
+        return self._compute_explicit_param_anchor()
 
 
 class PerPointTemplateModel(BaseTemplateModel):
@@ -448,8 +429,8 @@ class PerPointTemplateModel(BaseTemplateModel):
         Anchoring: Keep parameters close to initialization
         Smoothness: Spatial coherence along contour (Laplacian)
         """
-        # Anchoring using shared helper
-        prior = self._compute_explicit_param_anchor()
+        # Anchoring
+        losses = self._compute_explicit_param_anchor()
 
         # Smoothness: Penalize changes along the contour
         # Need peak_dist for smoothness computation
@@ -467,35 +448,43 @@ class PerPointTemplateModel(BaseTemplateModel):
             # edges: (2, E)
             idx_u, idx_v = self.edges[0], self.edges[1]
 
-            diff_sigma = self.log_sigma[idx_u] - self.log_sigma[idx_v]
-            diff_peak = log_peak_dist[idx_u] - log_peak_dist[idx_v]
-            smoothness = diff_sigma.pow(2).mean() + diff_peak.pow(2).mean()
+            # Sigma smoothness
+            losses[RegularizerType.SMOOTH_SIGMA.value] = (
+                (self.log_sigma[idx_u] - self.log_sigma[idx_v]).pow(2).mean()
+            )
+
+            # Peak dist smoothness
+            losses[RegularizerType.SMOOTH_PEAK_DIST.value] = (
+                (log_peak_dist[idx_u] - log_peak_dist[idx_v]).pow(2).mean()
+            )
 
             if not self.props.symmetric:
-                diff_sigma_ratio = self.log_sigma_ratio[idx_u] - self.log_sigma_ratio[idx_v]
-                diff_amp_ratio = self.log_amp_ratio[idx_u] - self.log_amp_ratio[idx_v]
-                smoothness = (
-                    smoothness + diff_sigma_ratio.pow(2).mean() + diff_amp_ratio.pow(2).mean()
+                losses[RegularizerType.SMOOTH_SIGMA_RATIO.value] = (
+                    (self.log_sigma_ratio[idx_u] - self.log_sigma_ratio[idx_v]).pow(2).mean()
+                )
+                losses[RegularizerType.SMOOTH_AMP_RATIO.value] = (
+                    (self.log_amp_ratio[idx_u] - self.log_amp_ratio[idx_v]).pow(2).mean()
                 )
         else:
             # 1D Contour smoothness using Laplacian (2nd order)
-            # Stack parameters into (N, C)
-            params_list = [self.log_sigma, log_peak_dist]
+            # We compute it per channel to allow different weights
+
+            losses[RegularizerType.SMOOTH_SIGMA.value] = self.laplacian_loss_fn(
+                self.log_sigma.unsqueeze(-1)
+            )
+            losses[RegularizerType.SMOOTH_PEAK_DIST.value] = self.laplacian_loss_fn(
+                log_peak_dist.unsqueeze(-1)
+            )
+
             if not self.props.symmetric:
-                params_list.extend([self.log_sigma_ratio, self.log_amp_ratio])
+                losses[RegularizerType.SMOOTH_SIGMA_RATIO.value] = self.laplacian_loss_fn(
+                    self.log_sigma_ratio.unsqueeze(-1)
+                )
+                losses[RegularizerType.SMOOTH_AMP_RATIO.value] = self.laplacian_loss_fn(
+                    self.log_amp_ratio.unsqueeze(-1)
+                )
 
-            # (N, C)
-            params_stacked = torch.stack(params_list, dim=1)
-            # We can't easily apply different weights inside the vectorized laplacian loss
-            # without changing how params are stacked or the loss fn.
-            # For simplicity in PerPoint, we assume uniform smoothness weight for now,
-            # or we could compute it per channel.
-            smoothness = self.laplacian_loss_fn(params_stacked)
-
-        return {
-            RegularizerType.TEMPLATE_PARAM_ANCHOR.value: prior,
-            RegularizerType.TEMPLATE_PARAM_LAPLACIAN.value: smoothness,
-        }
+        return losses
 
 
 class BSplineTemplateModel(BaseTemplateModel):
@@ -516,10 +505,10 @@ class BSplineTemplateModel(BaseTemplateModel):
         # Factor is min_peak_ratio / 2.0 because we sum two sigmas
         init_ratio = props.peak_dist / (2 * props.sigma)  # Assuming sigma1=sigma2=sigma
         init_excess = max(init_ratio - props.min_peak_ratio / 2.0, 1e-6)
-        # Vectorized control points
-        # Channels: excess, sigma1, amp1, [sigma2, amp2]
-        self.channel_names = ["excess", "sigma1", "amp1"]
-        init_vals = [init_excess, float(props.sigma), float(props.amp)]
+        # Vectorized control points (amp1 is fixed)
+        # Channels: excess, sigma1, [sigma2, amp2]
+        self.channel_names = ["excess", "sigma1"]
+        init_vals = [init_excess, float(props.sigma)]
 
         if not props.symmetric:
             self.channel_names.extend(["sigma2", "amp2"])
@@ -566,7 +555,7 @@ class BSplineTemplateModel(BaseTemplateModel):
 
         if self.props.symmetric:
             sigma2 = params["sigma1"]
-            amp2 = params["amp1"]
+            amp2 = self.amp_init
         else:
             sigma2 = params["sigma2"]
             amp2 = params["amp2"]
@@ -580,7 +569,7 @@ class BSplineTemplateModel(BaseTemplateModel):
             "peak_dist": peak_dist,
             "sigma1": params["sigma1"],
             "sigma2": sigma2,
-            "amp1": params["amp1"],
+            "amp1": self.amp_init,
             "amp2": amp2,
         }
 
@@ -618,64 +607,51 @@ class BSplineTemplateModel(BaseTemplateModel):
         1. Anchoring: Keep control points near initialization (prevents collapse)
         2. Smoothness: Penalize differences between adjacent control points
         """
-        # Anchoring (proximal regularization)
-        reg_anchor = torch.tensor(0.0, device=self.log_control_points.device)
+        losses = {}
 
         # sigma1 is always at index 1
         log_sigma1_cp = self.log_control_points[1]
+        sigma_ref = self.sigma_init.log()
+        losses[RegularizerType.ANCHOR_SIGMA.value] = (log_sigma1_cp - sigma_ref).pow(2).mean()
+        losses[RegularizerType.SMOOTH_SIGMA.value] = (
+            (log_sigma1_cp[1:] - log_sigma1_cp[:-1]).pow(2).mean()
+        )
 
-        if self.props.anchor_sigma > 0:
-            sigma_ref = self.sigma_init.log()
-            reg_anchor = (
-                reg_anchor + (log_sigma1_cp - sigma_ref).pow(2).mean() * self.props.anchor_sigma
-            )
+        # peak_dist is at index 0 (excess)
+        log_excess_cp = self.log_control_points[0]
+        # We anchor the excess parameter, which indirectly anchors peak_dist
+        # This is simpler than reconstructing peak_dist for control points
+        # Initial excess is calculated in __init__
+        sigma2_init = self.props.sigma * (1.0 if self.props.symmetric else self.props.sigma_ratio)
+        init_ratio = self.props.peak_dist / (self.props.sigma + sigma2_init)
+        init_excess = max(init_ratio - self.props.min_peak_ratio / 2.0, 1e-6)
+        excess_ref = torch.tensor(init_excess, device=log_excess_cp.device).log()
 
-        if self.props.anchor_peak_dist > 0:
-            # peak_dist is at index 0
-            log_peak_dist_cp = self.log_control_points[0]
-            peak_dist_ref = self.peak_dist_init.log()
-            reg_anchor = (
-                reg_anchor
-                + (log_peak_dist_cp - peak_dist_ref).pow(2).mean() * self.props.anchor_peak_dist
-            )
-
-        # Smoothness (first differences of control points) - always applied
-        smooth = (log_sigma1_cp[1:] - log_sigma1_cp[:-1]).pow(2).mean() * self.props.smooth_sigma
+        losses[RegularizerType.ANCHOR_PEAK_DIST.value] = (log_excess_cp - excess_ref).pow(2).mean()
+        losses[RegularizerType.SMOOTH_PEAK_DIST.value] = (
+            (log_excess_cp[1:] - log_excess_cp[:-1]).pow(2).mean()
+        )
 
         # Asymmetric case
         if not self.props.symmetric:
-            log_sigma2_cp = self.log_control_points[3]  # sigma2 at index 3
-            log_amp2_cp = self.log_control_points[4]  # amp2 at index 4
+            log_sigma2_cp = self.log_control_points[2]  # sigma2 at index 2
+            log_amp2_cp = self.log_control_points[3]  # amp2 at index 3
 
-            if self.props.anchor_sigma_ratio > 0:
-                sigma2_ref = (self.sigma_init * self.sigma_ratio_init).log()
-                reg_anchor = (
-                    reg_anchor
-                    + (log_sigma2_cp - sigma2_ref).pow(2).mean() * self.props.anchor_sigma_ratio
-                )
-
-            if self.props.anchor_amp_ratio > 0:
-                amp2_ref = (self.amp_init * self.amp_ratio_init).log()
-                reg_anchor = (
-                    reg_anchor
-                    + (log_amp2_cp - amp2_ref).pow(2).mean() * self.props.anchor_amp_ratio
-                )
-
-            # Smoothness on additional channels
-            smooth = (
-                smooth
-                + (log_sigma2_cp[1:] - log_sigma2_cp[:-1]).pow(2).mean()
-                * self.props.smooth_sigma_ratio
+            sigma2_ref = (self.sigma_init * self.sigma_ratio_init).log()
+            losses[RegularizerType.ANCHOR_SIGMA_RATIO.value] = (
+                (log_sigma2_cp - sigma2_ref).pow(2).mean()
             )
-            smooth = (
-                smooth
-                + (log_amp2_cp[1:] - log_amp2_cp[:-1]).pow(2).mean() * self.props.smooth_amp_ratio
+            losses[RegularizerType.SMOOTH_SIGMA_RATIO.value] = (
+                (log_sigma2_cp[1:] - log_sigma2_cp[:-1]).pow(2).mean()
             )
 
-        return {
-            RegularizerType.TEMPLATE_PARAM_ANCHOR.value: reg_anchor,
-            RegularizerType.TEMPLATE_PARAM_LAPLACIAN.value: smooth,
-        }
+            amp2_ref = (self.amp_init * self.amp_ratio_init).log()
+            losses[RegularizerType.ANCHOR_AMP_RATIO.value] = (log_amp2_cp - amp2_ref).pow(2).mean()
+            losses[RegularizerType.SMOOTH_AMP_RATIO.value] = (
+                (log_amp2_cp[1:] - log_amp2_cp[:-1]).pow(2).mean()
+            )
+
+        return losses
 
 
 class NeuralFieldTemplateModel(BaseTemplateModel):
@@ -704,8 +680,8 @@ class NeuralFieldTemplateModel(BaseTemplateModel):
             in_dim = hidden_dim
 
         self.net = nn.Sequential(*layers)
-        # Output 5 parameters (or 3 if symmetric)
-        out_dim = 3 if props.symmetric else 5
+        # Output 4 parameters (or 2 if symmetric)
+        out_dim = 2 if props.symmetric else 4
         self.head = nn.Linear(in_dim, out_dim)
 
         # Initialize head to zero so we start exactly at the initial props values
@@ -749,15 +725,7 @@ class NeuralFieldTemplateModel(BaseTemplateModel):
         Only anchoring is needed to prevent drift from initialization.
         """
         # Anchor output layer weights (one row per parameter type)
-        anchor_loss = self._compute_channel_anchor_loss(self.head.weight, param_dim=0)
-
-        # Also anchor bias terms for selected parameter types
-        weights = self._get_channel_weights("anchor")
-        for param_idx, weight in enumerate(weights):
-            if weight > 0:
-                anchor_loss = anchor_loss + self.head.bias[param_idx].pow(2) * weight
-
-        return {RegularizerType.TEMPLATE_PARAM_ANCHOR.value: anchor_loss}
+        return self._compute_channel_anchor_loss(self.head.weight, param_dim=0)
 
 
 class GridTemplateModel(BaseTemplateModel):
@@ -778,8 +746,8 @@ class GridTemplateModel(BaseTemplateModel):
         # Learnable grid: (1, num_params, H, W) or (1, num_params, D, H, W)
         # where num_params is the number of parameter types we're learning
         grid_size = getattr(props, "grid_size", 32)
-        # Parameter types: peak_dist, sigma1, [sigma2], amp1, [amp2]
-        num_params = 3 if props.symmetric else 5
+        # Parameter types: peak_dist, sigma1, [sigma2], [amp2]
+        num_params = 2 if props.symmetric else 4
 
         if spatial_dim == 3:
             self.grid = nn.Parameter(torch.zeros(1, num_params, grid_size, grid_size, grid_size))
@@ -818,7 +786,7 @@ class GridTemplateModel(BaseTemplateModel):
         grid_coords = grid_coords.view(*view_shape)
 
         # Sample from grid (interpolate parameter values at query positions)
-        num_params = 3 if self.props.symmetric else 5
+        num_params = 2 if self.props.symmetric else 4
         out = F.grid_sample(self.grid, grid_coords, align_corners=True).view(num_params, -1).T
 
         return self._decode_log_residuals(out)
@@ -830,8 +798,7 @@ class GridTemplateModel(BaseTemplateModel):
         Only anchoring is needed to prevent drift from initialization.
         """
         # Grid shape: (1, num_params, H, W) - anchor across H,W for each param type
-        anchor_loss = self._compute_channel_anchor_loss(self.grid[0], param_dim=0)
-        return {RegularizerType.TEMPLATE_PARAM_ANCHOR.value: anchor_loss}
+        return self._compute_channel_anchor_loss(self.grid[0], param_dim=0)
 
 
 class GaussianSplatTemplateModel(BaseTemplateModel):
@@ -858,7 +825,7 @@ class GaussianSplatTemplateModel(BaseTemplateModel):
         # Splat influence radius (inverse scale)
         self.log_radius = nn.Parameter(torch.ones(num_splats) * 3.0)
         # Parameter payloads (residuals)
-        num_payloads = 3 if props.symmetric else 5
+        num_payloads = 2 if props.symmetric else 4
         self.payloads = nn.Parameter(torch.zeros(num_splats, num_payloads))
 
     def get_params(
@@ -883,7 +850,7 @@ class GaussianSplatTemplateModel(BaseTemplateModel):
         weights = weights / (weights.sum(dim=1, keepdim=True) + 1e-8)
 
         # Interpolate payloads
-        out = weights @ self.payloads  # (B, 5)
+        out = weights @ self.payloads  # (B, 4)
 
         return self._decode_log_residuals(out)
 
@@ -894,5 +861,4 @@ class GaussianSplatTemplateModel(BaseTemplateModel):
         Only anchoring is needed to prevent drift from initialization.
         """
         # Payloads shape: (num_splats, num_params) - anchor across splats for each param type
-        anchor_loss = self._compute_channel_anchor_loss(self.payloads, param_dim=1)
-        return {RegularizerType.TEMPLATE_PARAM_ANCHOR.value: anchor_loss}
+        return self._compute_channel_anchor_loss(self.payloads, param_dim=1)
