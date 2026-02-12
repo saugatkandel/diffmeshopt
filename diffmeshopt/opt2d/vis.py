@@ -400,6 +400,75 @@ def plot_contour_crops(
     return fig
 
 
+def plot_rbf_deformation(
+    initial_contour: np.ndarray | torch.Tensor,
+    final_contour: np.ndarray | torch.Tensor,
+    control_points: np.ndarray | torch.Tensor,
+    weights: np.ndarray | torch.Tensor,
+    ax: Axes | None = None,
+    title: str = "RBF Deformation Field",
+) -> None:
+    """
+    Visualizes the RBF deformation field.
+
+    Args:
+        initial_contour: (N, 2) array of initial vertices (row, col).
+        final_contour: (N, 2) array of deformed vertices (row, col).
+        control_points: (K, 2) array of RBF centers (row, col).
+        weights: (K, 2) array of RBF weights/vectors (row, col).
+        ax: Optional matplotlib axes.
+        title: Plot title.
+    """
+    if ax is None:
+        fig, ax = plt.subplots(figsize=(10, 10))
+        show_plot = True
+    else:
+        show_plot = False
+
+    # Convert to numpy
+    def _to_np(x):
+        if isinstance(x, torch.Tensor):
+            return x.detach().cpu().numpy()
+        return x
+
+    init_c = _to_np(initial_contour)
+    final_c = _to_np(final_contour)
+    cp = _to_np(control_points)
+    w = _to_np(weights)
+
+    # Plot contours
+    # (row, col) -> plot(x=col, y=row)
+    ax.plot(init_c[:, 1], init_c[:, 0], "k--", alpha=0.5, label="Initial")
+    ax.plot(final_c[:, 1], final_c[:, 0], "b-", linewidth=2, label="Deformed")
+
+    # Plot control points
+    ax.scatter(cp[:, 1], cp[:, 0], c="red", s=30, zorder=5, label="Control Points")
+
+    # Plot weight vectors
+    # Quiver expects (x, y, u, v). Our data is (row, col).
+    # x = col, y = row. u = w_col, v = w_row.
+    ax.quiver(
+        cp[:, 1],
+        cp[:, 0],
+        w[:, 1],
+        w[:, 0],
+        color="red",
+        angles="xy",
+        scale_units="xy",
+        scale=1,
+        width=0.005,
+        label="Weights",
+    )
+
+    ax.set_title(title)
+    ax.legend()
+    ax.set_aspect("equal")
+
+    if show_plot:
+        ax.invert_yaxis()
+        plt.show()
+
+
 def plot_bspline_basis(
     num_cp: int = 8,
     num_eval: int = 200,

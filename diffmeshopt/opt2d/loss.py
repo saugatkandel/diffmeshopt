@@ -365,6 +365,7 @@ class ContourLoss(nn.Module):
         sample_step: float = 1.0,
         laplacian_window_size: int = 3,
         laplacian_mode: str = "full",
+        shape_loss_weight: float = 1.0,
         initial_weights: dict[str, float] | None = None,
     ):
         super().__init__()
@@ -393,6 +394,9 @@ class ContourLoss(nn.Module):
             weight_value = weight_overrides.get(reg_type, 0.0)
             buffer_name = f"w_{reg_type.value}"
             self.register_buffer(buffer_name, torch.tensor(weight_value, dtype=torch.float32))
+
+        # Register shape loss weight explicitly (it is part of data term, not a regularizer)
+        self.register_buffer("w_shape", torch.tensor(shape_loss_weight, dtype=torch.float32))
 
         # Storage for raw (unweighted) losses for adaptive weight computation
         self._raw_losses: dict[str, torch.Tensor] = {}
@@ -479,7 +483,7 @@ class ContourLoss(nn.Module):
                        Expected keys: "template_param_anchor", "template_param_laplacian"
 
         Returns:
-            Dictionary with total_loss and all component losses (weighted)
+            Dictionary with total_loss and all component losses (weighted).
         """
         # Compute all raw (unweighted) losses
         data_loss = self.data_loss_fn(
@@ -511,10 +515,10 @@ class ContourLoss(nn.Module):
         # Store raw losses for adaptive weight computation
         # Keys must match RegularizerType enum values (plus "data" which is special)
         self._raw_losses = {
-            "data": data_loss,
+            "correlation": data_loss,
+            "shape": shape_loss,
             RegularizerType.CONTOUR_LAPLACIAN.value: contour_laplacian_loss,
             RegularizerType.EDGE_LENGTH.value: edge_length_loss,
-            RegularizerType.TEMPLATE_SHAPE.value: shape_loss,
             RegularizerType.TANGENTIAL_LAPLACIAN.value: tangential_laplacian_loss,
             RegularizerType.NORMAL_CONSISTENCY.value: normal_consistency_loss,
         }
@@ -530,12 +534,17 @@ class ContourLoss(nn.Module):
                     logging.warning(f"Unknown regularizer key in reg_losses: '{k}'. Ignoring.")
 
         # Compute weighted losses and total
-        # Data loss always has weight=1.0 (serves as reference for adaptive regularizers)
-        total_loss = data_loss
+        # Data Term = Correlation Loss + Weighted Shape Loss
+        # Correlation loss always has weight=1.0
+        weighted_shape_loss = self.w_shape * shape_loss
+        total_data_loss = data_loss + weighted_shape_loss
+        total_loss = total_data_loss
 
         # Return weighted losses
         results = {
-            "data_loss": data_loss,  # Always weight=1.0
+            "data_loss": total_data_loss,  # Combined data term
+            "correlation_loss": data_loss,
+            "shape_loss": weighted_shape_loss,
         }
 
         # Dynamically compute total loss and populate results for all regularizers

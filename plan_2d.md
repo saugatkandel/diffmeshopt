@@ -50,6 +50,9 @@ This document outlines the strategy for implementing and testing the differentia
 *   **Edge Length Consistency**: Penalize variance in edge lengths to prevent vertex bunching.
 *   **Tangential Smoothing (Spacing)**: Penalizes only the tangential component of the Laplacian to distribute vertices evenly without shrinking.
 *   **Normal Consistency (Fairing)**: Penalizes the angle between adjacent normals to ensure smoothness.
+*   **Contour Anchor**: Penalizes deviation from initialization ($L2$) to prevent drift in ambiguous regions.
+*   **RBF Weight Decay**: Penalizes the magnitude of RBF weights to minimize deformation energy.
+*   **Weighting Strategy**: Defaults derived via **Force Balance Heuristic** ($\lambda \approx 1/(2 D \sigma)$).
 *   **Template Regularization**: Smoothness priors for Per-Point template models.
 
 ## 5. Evaluation & Training
@@ -77,6 +80,7 @@ This document outlines the strategy for implementing and testing the differentia
         *   Verify `TangentialSmoothingContourRefiner` prevents shrinking compared to standard Laplacian.
         *   Verify `RBFContourRefiner` moves vertices coherently.
         *   Verify `BSplineContourRefiner` produces smooth curves without explicit Laplacian loss on vertices.
+        *   **Analysis Scripts**: Use `examples/` scripts (e.g., `analyze_force_dropoff.py`, `analyze_contour_anchor.py`) to validate physical behaviors and parameter sensitivity.
     *   **Status**: All refiners verified in `tests/opt2d/test_convergence.py`.
     *   **Template Verification**: `NeuralFieldTemplateModel` and others tested in `test_template.py`.
     *   **Observations**:

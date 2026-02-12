@@ -8,6 +8,7 @@ progressively testing on unperturbed data, then small perturbations, then large 
 
 import json
 import logging
+import subprocess
 import sys
 import traceback
 from pathlib import Path
@@ -48,7 +49,7 @@ logger = logging.getLogger(__name__)
 SEARCH_DEFAULTS = {
     "optimization": {
         "num_steps": 2000,
-        "learning_rate": 0.01,
+        "learning_rate": 0.05,
     },
     "template": {
         "sigma": 0.75,
@@ -341,6 +342,12 @@ class ExperimentRunner:
             logger.error("Metrics does not exist.")
             return float("inf")
         chamfer = metrics["mean_dist"]
+
+        logger.info(
+            f"Trial {params['trial_id']} | Case: {case_name} | "
+            f"Chamfer: {chamfer:.4f} | Status: Success"
+        )
+        # ------------------------------
         return chamfer
 
     def verify_run(self) -> bool:
@@ -532,11 +539,47 @@ def main(dataset, output, n_trials, n_jobs, device, verify):
         pruner=optuna.pruners.MedianPruner(n_startup_trials=5, n_warmup_steps=0),
     )
 
-    logger.info("Starting optimization...")
-    try:
-        study.optimize(runner.objective, n_trials=n_trials, n_jobs=n_jobs)
-    except KeyboardInterrupt:
-        logger.info("Optimization interrupted.")
+    if n_jobs > 1:
+        logger.info(f"Launching {n_jobs} parallel workers for {n_trials} total trials...")
+        processes = []
+        trials_per_job = n_trials // n_jobs
+        remainder = n_trials % n_jobs
+
+        for i in range(n_jobs):
+            t = trials_per_job + (1 if i < remainder else 0)
+            if t == 0:
+                continue
+
+            cmd = [
+                sys.executable,
+                "-m",
+                "diffmeshopt.opt2d.hyperparameter_search",
+                "--dataset",
+                str(dataset),
+                "--output",
+                str(output),
+                "--n-trials",
+                str(t),
+                "--n-jobs",
+                "1",
+                "--device",
+                device,
+            ]
+            processes.append(subprocess.Popen(cmd))
+
+        try:
+            for p in processes:
+                p.wait()
+        except KeyboardInterrupt:
+            logger.info("Interrupted. Terminating workers...")
+            for p in processes:
+                p.terminate()
+    else:
+        logger.info("Starting optimization...")
+        try:
+            study.optimize(runner.objective, n_trials=n_trials, n_jobs=1)
+        except KeyboardInterrupt:
+            logger.info("Optimization interrupted.")
 
     # Save results
     logger.info("Saving results...")

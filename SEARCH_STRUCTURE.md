@@ -44,7 +44,6 @@ The search samples the following parameters:
 *   `edge`: Edge length consistency.
 *   `normal`: Normal consistency (fairing).
 *   `tangential`: Tangential smoothing (vertex distribution).
-*   `shape`: Template shape prior.
 *   `anchor`: Template parameter anchoring.
 *   `smooth_param`: Template parameter smoothness.
 

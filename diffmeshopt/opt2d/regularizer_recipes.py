@@ -15,7 +15,7 @@ Usage:
     props.initial_loss_weights["normal_consistency"] = 3.0
 """
 
-from diffmeshopt.opt2d.config import RegularizerType
+from diffmeshopt.opt2d.config import RegularizationStrategy, RegularizerType
 
 # ============================================================================
 # Standard Configurations
@@ -27,12 +27,13 @@ STANDARD = {
     RegularizerType.TANGENTIAL_LAPLACIAN.value: 1.0,
     RegularizerType.NORMAL_CONSISTENCY.value: 1.0,
     RegularizerType.EDGE_LENGTH.value: 0.0,
+    RegularizerType.CONTOUR_ANCHOR.value: 0.1,  # Safety anchor (allows ~5px drift)
     # Template params
     RegularizerType.ANCHOR_SIGMA.value: 0.0,
     RegularizerType.ANCHOR_PEAK_DIST.value: 0.0,
     RegularizerType.SMOOTH_SIGMA.value: 1.0,
     RegularizerType.SMOOTH_PEAK_DIST.value: 1.0,
-    RegularizerType.TEMPLATE_SHAPE.value: 1.0,
+    RegularizerType.RBF_WEIGHT_DECAY.value: 0.1,  # Safety for RBF
 }
 
 MINIMAL = {
@@ -41,11 +42,12 @@ MINIMAL = {
     RegularizerType.TANGENTIAL_LAPLACIAN.value: 0.0,
     RegularizerType.NORMAL_CONSISTENCY.value: 0.0,
     RegularizerType.EDGE_LENGTH.value: 0.0,
+    RegularizerType.CONTOUR_ANCHOR.value: 0.0,
     # Template params
     RegularizerType.ANCHOR_SIGMA.value: 0.0,
     RegularizerType.SMOOTH_SIGMA.value: 0.1,
     RegularizerType.SMOOTH_PEAK_DIST.value: 0.1,
-    RegularizerType.TEMPLATE_SHAPE.value: 0.1,
+    RegularizerType.RBF_WEIGHT_DECAY.value: 0.1,
 }
 
 
@@ -56,43 +58,46 @@ MINIMAL = {
 TANGENTIAL_SMOOTHING_VERTEX = {
     # For vertex-based refinement (ContourRefiner)
     # Disables shrinking, uses tangential regularization
-    RegularizerType.CONTOUR_LAPLACIAN.value: 0.0,  # Disabled (causes shrinking)
+    RegularizerType.CONTOUR_LAPLACIAN.value: 0.1,  # Weak shrinking to constrain expansion
     RegularizerType.TANGENTIAL_LAPLACIAN.value: 5.0,  # Primary: even point spacing
     RegularizerType.NORMAL_CONSISTENCY.value: 2.0,  # Secondary: smooth curvature
     RegularizerType.EDGE_LENGTH.value: 0.0,  # Disabled
+    RegularizerType.CONTOUR_ANCHOR.value: 0.1,  # Safety anchor
     # Template params
     RegularizerType.ANCHOR_SIGMA.value: 0.0,
     RegularizerType.SMOOTH_SIGMA.value: 1.0,
     RegularizerType.SMOOTH_PEAK_DIST.value: 1.0,
-    RegularizerType.TEMPLATE_SHAPE.value: 1.0,
+    RegularizerType.RBF_WEIGHT_DECAY.value: 0.1,  # Prevent large deformations
 }
 
 TANGENTIAL_SMOOTHING_BSPLINE = {
     # For B-spline refinement (BSplineContourRefiner)
-    # Weaker fairing due to smooth parameterization
-    RegularizerType.CONTOUR_LAPLACIAN.value: 0.0,
-    RegularizerType.TANGENTIAL_LAPLACIAN.value: 5.0,
-    RegularizerType.NORMAL_CONSISTENCY.value: 0.5,  # Weaker for B-splines
+    # Shrinking is DISABLED: B-splines suffer from corner-cutting if control points are shrunk.
+    RegularizerType.CONTOUR_LAPLACIAN.value: 0.0,  # Disabled
+    RegularizerType.TANGENTIAL_LAPLACIAN.value: 5.0,  # Essential for control point spacing
+    RegularizerType.NORMAL_CONSISTENCY.value: 0.0,  # Disabled: Splines are inherently C2 smooth
     RegularizerType.EDGE_LENGTH.value: 0.0,
+    RegularizerType.CONTOUR_ANCHOR.value: 0.1,  # Safety anchor
     # Template params
     RegularizerType.ANCHOR_SIGMA.value: 0.0,
     RegularizerType.SMOOTH_SIGMA.value: 1.0,
     RegularizerType.SMOOTH_PEAK_DIST.value: 1.0,
-    RegularizerType.TEMPLATE_SHAPE.value: 1.0,
+    RegularizerType.RBF_WEIGHT_DECAY.value: 0.1,  # Prevent large deformations
 }
 
 TANGENTIAL_SMOOTHING_RBF = {
     # For RBF refinement (RBFContourRefiner)
-    # Very weak fairing for RBF
-    RegularizerType.CONTOUR_LAPLACIAN.value: 0.0,
-    RegularizerType.TANGENTIAL_LAPLACIAN.value: 5.0,
-    RegularizerType.NORMAL_CONSISTENCY.value: 0.1,  # Much weaker for RBF
+    # Shrinking is DISABLED: RBF shape is controlled by weight decay.
+    RegularizerType.CONTOUR_LAPLACIAN.value: 0.0,  # Disabled
+    RegularizerType.TANGENTIAL_LAPLACIAN.value: 0.0,  # Disabled: Centers are fixed
+    RegularizerType.NORMAL_CONSISTENCY.value: 0.0,  # Disabled: Field is inherently smooth
     RegularizerType.EDGE_LENGTH.value: 0.0,
+    RegularizerType.CONTOUR_ANCHOR.value: 0.0,  # RBF uses WEIGHT_DECAY instead
     # Template params
     RegularizerType.ANCHOR_SIGMA.value: 0.0,
     RegularizerType.SMOOTH_SIGMA.value: 1.0,
     RegularizerType.SMOOTH_PEAK_DIST.value: 1.0,
-    RegularizerType.TEMPLATE_SHAPE.value: 1.0,
+    RegularizerType.RBF_WEIGHT_DECAY.value: 0.1,  # Prevent large deformations
 }
 
 
@@ -106,11 +111,11 @@ STRONG_SMOOTHING = {
     RegularizerType.TANGENTIAL_LAPLACIAN.value: 2.0,
     RegularizerType.NORMAL_CONSISTENCY.value: 3.0,
     RegularizerType.EDGE_LENGTH.value: 1.0,
+    RegularizerType.CONTOUR_ANCHOR.value: 0.1,  # Anchor to help with noise
     # Template params
     RegularizerType.ANCHOR_SIGMA.value: 0.0,
     RegularizerType.SMOOTH_SIGMA.value: 2.0,
     RegularizerType.SMOOTH_PEAK_DIST.value: 2.0,
-    RegularizerType.TEMPLATE_SHAPE.value: 2.0,
 }
 
 DATA_DRIVEN = {
@@ -119,11 +124,11 @@ DATA_DRIVEN = {
     RegularizerType.TANGENTIAL_LAPLACIAN.value: 0.1,
     RegularizerType.NORMAL_CONSISTENCY.value: 0.1,
     RegularizerType.EDGE_LENGTH.value: 0.0,
+    RegularizerType.CONTOUR_ANCHOR.value: 0.0,
     # Template params
     RegularizerType.ANCHOR_SIGMA.value: 0.0,
     RegularizerType.SMOOTH_SIGMA.value: 0.1,
     RegularizerType.SMOOTH_PEAK_DIST.value: 0.1,
-    RegularizerType.TEMPLATE_SHAPE.value: 0.1,
 }
 
 
@@ -135,6 +140,7 @@ ANCHORED_ALL[RegularizerType.ANCHOR_SIGMA.value] = 0.1
 ANCHORED_ALL[RegularizerType.ANCHOR_PEAK_DIST.value] = 0.1
 ANCHORED_ALL[RegularizerType.ANCHOR_SIGMA_RATIO.value] = 0.1
 ANCHORED_ALL[RegularizerType.ANCHOR_AMP_RATIO.value] = 0.1
+ANCHORED_ALL[RegularizerType.CONTOUR_ANCHOR.value] = 0.1
 
 # ============================================================================
 # Quick Reference Guide
@@ -151,6 +157,54 @@ RECIPES_BY_USE_CASE = {
     "anchored_sigma": ANCHORED_SIGMA,
     "anchored_all": ANCHORED_ALL,
 }
+
+
+def resolve_strategy(
+    strategy: RegularizationStrategy,
+    refiner_type: str,
+    base_weights: dict[str, float] | None = None,
+) -> dict[str, float]:
+    """
+    Resolves a high-level strategy into specific weight overrides.
+
+    Args:
+        strategy: The high-level strategy to apply.
+        refiner_type: The class name of the refiner (e.g. "BSplineContourRefiner").
+        base_weights: Optional existing weights to merge/override.
+
+    Returns:
+        Dictionary of {regularizer_name: weight}.
+    """
+    weights = base_weights.copy() if base_weights else {}
+
+    if strategy == RegularizationStrategy.MANUAL:
+        return weights
+
+    recipe = {}
+
+    if strategy == RegularizationStrategy.TANGENTIAL_SMOOTHING:
+        # Select appropriate recipe based on refiner type
+        if "BSpline" in refiner_type:
+            recipe = TANGENTIAL_SMOOTHING_BSPLINE
+        elif "RBF" in refiner_type:
+            recipe = TANGENTIAL_SMOOTHING_RBF
+        else:
+            # Default to vertex-based
+            recipe = TANGENTIAL_SMOOTHING_VERTEX
+
+    elif strategy == RegularizationStrategy.STRONG_SMOOTHING:
+        recipe = STRONG_SMOOTHING
+
+    elif strategy == RegularizationStrategy.MINIMAL:
+        recipe = MINIMAL
+
+    # Merge recipe into weights
+    # Strategy defines the baseline, but user-provided base_weights take precedence.
+    for k, v in recipe.items():
+        if k not in weights:
+            weights[k] = v
+
+    return weights
 
 
 def print_recipe(name: str):

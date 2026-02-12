@@ -20,6 +20,7 @@ We have implemented a 2D prototype for refining organelle segmentations using a 
 *   `notebooks/train_2d.ipynb`: Training loop with TensorBoard visualization.
 *   `notebooks/compare_combinations.ipynb`: Systematic testing of different refiner/template combinations.
 *   `tests/opt2d/`: Unit and integration tests.
+*   `examples/`: Standalone analysis scripts (`analyze_contour_anchor.py`, `compare_refiners.py`, etc.).
 
 ## Current State
 - **Core Modules Refactored**:
@@ -29,6 +30,7 @@ We have implemented a 2D prototype for refining organelle segmentations using a 
 - **New Refinement Strategies**:
     - **Tangential Smoothing**: Implemented `TangentialSmoothingContourRefiner` and updated losses to support a "Tangential Laplacian" and "Normal Consistency" (Fairing). This decouples smoothing from shrinking, allowing vertices to slide along the surface without collapsing the volume.
     - **RBF Deformation**: Implemented `RBFContourRefiner`, which uses Radial Basis Functions to deform the mesh via sparse control points. This is inherently smooth and 3D-ready.
+    - **Unified Regularization**: Implemented `RegularizationStrategy` enum and `regularizer_recipes.py` to centralize weight configurations. Weights are now derived from a physics-based "Force Balance" heuristic.
 - **3D Readiness**:
     - **Documentation**: Created `plan_3d.md` outlining the porting strategy.
     - Loss functions (`LaplacianSmoothingLoss`, `EdgeLengthConsistencyLoss`, `NormalConsistencyLoss`) updated to support explicit edge connectivity (Graph Laplacian), enabling support for 3D meshes.
@@ -61,6 +63,8 @@ We have implemented a 2D prototype for refining organelle segmentations using a 
     - Enhanced `compare_combinations.ipynb` with detailed parameter visualization (line plots, bar charts) and quantitative metrics tables.
     - **Regularizer Architecture**: Implemented dynamic weight registry (`RegularizerType` enum -> auto-registered buffers) to eliminate manual synchronization and ensure type safety.
     - **Documentation**: Consolidated regularization docs into `REGULARIZATION.md`.
+    - **Shape Loss Refactoring**: Reclassified Template Shape Loss as part of the Data Term (summed with Correlation Loss) rather than a Regularizer. This ensures it contributes to the signal magnitude for adaptive regularization balancing.
+    - **Analysis Suite**: Added comprehensive example scripts in `examples/` to validate individual components (force dropoff, anchor weights, B-spline parameters). These scripts are currently being refined to ensure experimental correctness (e.g., fixing initialization basins, tuning regularization recipes).
 
 ## Validation Status
 - **Synthetic Data**: Basic functionality works, but recent changes (template models, masking) have not been rigorously verified.
@@ -78,6 +82,8 @@ We have implemented a 2D prototype for refining organelle segmentations using a 
 - **No Explicit Remeshing**: We avoid remeshing during the optimization loop to maintain differentiability. Instead, we rely on `EdgeLengthConsistencyLoss` and `LaplacianSmoothingLoss` to maintain mesh quality.
 - **B-Spline Regularization**: For the B-spline refiner, we apply Laplacian and Edge Length regularization to the **control points** to ensure a uniform parameterization and prevent control point bunching, even though the spline curve itself is inherently smooth.
 - **Implicit Regularization**: We prefer B-Spline or Neural Field parameterizations for template parameters to enforce smoothness implicitly, rather than relying solely on explicit smoothness losses.
+- **Static Geometric Constraints**: Geometric regularizers (Tangential Laplacian, Normal Consistency) are now configured as **static constraints** (`target_ratio=0.0`) by default. They do not adapt during optimization, ensuring mesh quality is maintained even if the data term fluctuates.
+- **Force Balance Heuristic**: Default regularization weights are derived analytically based on the template width and a target maximum displacement (e.g., 5 pixels), rather than arbitrary tuning.
 - **Template Model Philosophy**: We favor explicit 1D models like `BSplineTemplateModel` for parameterizing template variations. This provides a stronger and more appropriate inductive bias for properties varying along a 1D manifold (the contour) compared to more general but less efficient ambient 2D field models (`NeuralField`, `Grid`).
 
 ## In Progress / Next Steps

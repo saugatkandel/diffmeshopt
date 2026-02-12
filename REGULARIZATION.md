@@ -2,7 +2,24 @@
 
 This document outlines the regularization techniques used in `diffmeshopt` to ensure mesh quality and prevent degenerate solutions during optimization.
 
-## 1. Geometric Regularization
+## 1. Weight Derivation (Force Balance Heuristic)
+To avoid arbitrary hyperparameter tuning, we derive default regularization weights ($\lambda$) using a **Force Balance Approximation**. We treat the optimization as a physical system where the data force pulls vertices towards image features, and the regularization force resists deformation.
+
+*   **Data Force ($F_{data}$)**: The gradient of the correlation loss is roughly proportional to the inverse of the template width ($1/\sigma_{template}$).
+*   **Elastic Force ($F_{reg}$)**: The gradient of an L2 penalty ($\lambda x^2$) is $2 \lambda x$, where $x$ is displacement.
+*   **Equilibrium**: We want forces to balance at a maximum reasonable displacement $D$ (e.g., 5 pixels).
+    $$ F_{data} \approx F_{reg} \implies \frac{1}{\sigma_{template}} \approx 2 \lambda D $$
+*   **Result**:
+    $$ \lambda \approx \frac{1}{2 \cdot D \cdot \sigma_{template}} $$
+
+**Note on Data Term**:
+The Data Term ($F_{data}$) is composed of:
+1.  **Correlation Loss**: Matches the sampled intensity profile to the template.
+2.  **Shape Loss**: Penalizes deviation of the template shape from the mean sampled profile. This is treated as a data constraint, not a regularizer.
+
+**Example**: For a target displacement limit $D=5$px and template width $\sigma=1.0$, the weight should be $\lambda \approx 0.1$.
+
+## 2. Geometric Regularization
 These losses act on the contour vertices (or control points) to enforce smoothness and uniform sampling.
 
 ### A. Laplacian Smoothing (`CONTOUR_LAPLACIAN`)
@@ -28,7 +45,19 @@ These losses act on the contour vertices (or control points) to enforce smoothne
 *   **Effect**: Encourages uniform edge lengths.
 *   **Usage**: **Redundant** when Tangential Smoothing is active. The Tangential Laplacian force naturally distributes vertices uniformly along the contour (like a spring network), rendering explicit edge length penalties unnecessary.
 
-## 2. Template Parameter Regularization
+### E. Contour Anchor (`CONTOUR_ANCHOR`)
+*   **Formulation**: $L = ||v - v_{init}||^2$
+*   **Effect**: Penalizes deviation from the initial contour.
+*   **Usage**:
+    *   **Vertex Refiner**: Acts as a "soft tether" or trust region. Useful when initialization is reliable and we want to prevent drift in ambiguous image regions. However, high weights can prevent fitting.
+    *   **B-Spline Refiner**: Critical for regularizing control points. Prevents them from drifting along the curve (tangential drift) or collapsing, ensuring the parameterization remains well-behaved.
+
+### F. RBF Weight Decay (`RBF_WEIGHT_DECAY`)
+*   **Formulation**: $L = \sum w_i^2$ (where $w_i$ are RBF weights).
+*   **Effect**: Minimizes the deformation energy of the RBF field.
+*   **Usage**: Primary regularizer for `RBFContourRefiner`.
+
+## 3. Template Parameter Regularization
 These losses act on the learnable parameters of the intensity template (e.g., $\sigma$, peak distance, amplitude).
 
 ### A. Anchoring (`ANCHOR_*`)
@@ -41,27 +70,32 @@ These losses act on the learnable parameters of the intensity template (e.g., $\
 *   **Formulation**: Laplacian smoothing applied to the parameter field.
 *   **Usage**: Used for `PerPointTemplateModel` and `GridTemplateModel`.
 
-## 3. Refinement Strategies
+## 4. Refinement Strategies (Recipes)
+We define high-level `RegularizationStrategy` enums that map to specific weight configurations ("recipes") for each refiner type.
 
 ### Vertex-Based (`ContourRefiner`)
-*   **Challenge**: Prone to high-frequency noise and shrinkage.
-*   **Strategy**: **Tangential Smoothing**.
-    *   `CONTOUR_LAPLACIAN`: 0.0 (Disable shrinking)
-    *   `TANGENTIAL_LAPLACIAN`: High (e.g., 5.0) for spacing.
-    *   `NORMAL_CONSISTENCY`: Moderate (e.g., 2.0) for smoothness.
+*   **Strategy**: `TANGENTIAL_SMOOTHING`
+*   **Weights**:
+    *   `TANGENTIAL_LAPLACIAN`: **5.0** (Strong spacing constraint).
+    *   `NORMAL_CONSISTENCY`: **2.0** (Moderate fairing).
+    *   `CONTOUR_LAPLACIAN`: **0.0** (Disable shrinking).
+    *   `CONTOUR_ANCHOR`: **0.1** (Safety).
 
 ### B-Spline (`BSplineContourRefiner`)
-*   **Challenge**: Control points can bunch up; curve is inherently smooth but can loop.
-*   **Strategy**: Regularize **Control Points**.
-    *   `TANGENTIAL_LAPLACIAN`: Applied to control points to keep them uniform.
-    *   `NORMAL_CONSISTENCY`: Low (curve is already $C^2$).
+*   **Strategy**: `TANGENTIAL_SMOOTHING`
+*   **Weights**:
+    *   `TANGENTIAL_LAPLACIAN`: **5.0** (Applied to control points to ensure uniform parameterization).
+    *   `NORMAL_CONSISTENCY`: **0.0** (Disabled: B-splines are inherently $C^2$ smooth).
+    *   `CONTOUR_ANCHOR`: **0.1** (Safety).
 
 ### RBF (`RBFContourRefiner`)
-*   **Challenge**: Deformation field can become singular.
-*   **Strategy**: Regularize the **Deformed Contour**.
-    *   Standard geometric losses applied to the output vertices.
+*   **Strategy**: `TANGENTIAL_SMOOTHING` (effectively Weight Decay)
+*   **Weights**:
+    *   `RBF_WEIGHT_DECAY`: **0.1** (Physics-based default).
+    *   `TANGENTIAL_LAPLACIAN`: **0.0** (Not needed, centers are fixed).
+    *   `NORMAL_CONSISTENCY`: **0.0** (Not needed, field is smooth).
 
-## 4. Adaptive Regularization
+## 5. Adaptive Regularization
 *   **Mechanism**: Dynamically adjusts regularization weights during optimization to maintain a target ratio between the Data Loss and Regularization Loss.
 *   **Goal**: Prevents regularization from dominating early (preventing fitting) or vanishing late (allowing noise).
 *   **Config**: `AdaptiveRegularizationProps` in `props.py`.

@@ -9,7 +9,13 @@ import pytest
 import torch
 
 from diffmeshopt.opt2d import vis
-from diffmeshopt.opt2d.config import ContourRefinerProps, TemplateProps
+from diffmeshopt.opt2d.config import (
+    ContourRefinerProps,
+    RBFContourRefinerProps,
+    TemplateProps,
+)
+from diffmeshopt.opt2d.refiner import RBFContourRefiner
+from diffmeshopt.opt2d.template import FixedTemplateModel
 
 
 @pytest.fixture
@@ -156,4 +162,24 @@ def test_compare_bspline_basis_functions(mock_plt):
 def test_plot_parameter_curves(mock_plt):
     params = {"p1": torch.randn(10), "p2": torch.randn(10)}
     vis.plot_parameter_curves(params)
+    assert mock_plt.show.called
+
+
+def test_plot_rbf_deformation(mock_plt):
+    init_c = np.zeros((10, 2))
+    final_c = np.zeros((10, 2))
+    cp = np.zeros((5, 2))
+    w = np.zeros((5, 2))
+    vis.plot_rbf_deformation(init_c, final_c, cp, w)
+    assert mock_plt.show.called
+
+
+def test_refiner_visualize_rbf_field(mock_plt):
+    """Test the integration method on the refiner."""
+    initial_contour = torch.rand((10, 2))
+    props = RBFContourRefinerProps(rbf_num_control_points=5)
+    template = FixedTemplateModel(TemplateProps())
+    refiner = RBFContourRefiner(initial_contour, props, template)
+
+    refiner.visualize_rbf_field()
     assert mock_plt.show.called

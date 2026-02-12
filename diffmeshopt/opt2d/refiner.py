@@ -13,6 +13,7 @@ from diffmeshopt.opt2d.config import (
     BSplineContourRefinerProps,
     ContourRefinerProps,
     RBFContourRefinerProps,
+    RegularizationStrategy,
     RegularizerType,
 )
 from diffmeshopt.opt2d.geometry import (
@@ -21,6 +22,7 @@ from diffmeshopt.opt2d.geometry import (
     get_bspline_matrix,
 )
 from diffmeshopt.opt2d.loss import ContourLoss
+from diffmeshopt.opt2d.regularizer_recipes import resolve_strategy
 from diffmeshopt.opt2d.sampling import sample_profiles_stochastic
 from diffmeshopt.opt2d.template import BaseTemplateModel
 
@@ -67,9 +69,18 @@ class ContourRefinerBase(nn.Module, abc.ABC):
         # This ensures that all defined regularizers have default configs in RegularizerDefaults
         self.props._reg_defaults.validate()
 
+        # Resolve Regularization Strategy
+        # This merges strategy-defined weights with user-provided overrides
+        strategy_weights = resolve_strategy(
+            props.regularization_strategy, self.__class__.__name__, props.initial_loss_weights
+        )
+
         # Get initial weights (computed from ratios if not explicitly set)
         # Dynamically extract all weights from props based on RegularizerType
-        initial_weights = {reg.value: props.get_initial_weight(reg) for reg in RegularizerType}
+        initial_weights = {
+            reg.value: strategy_weights.get(reg.value, props.get_initial_weight(reg))
+            for reg in RegularizerType
+        }
 
         # Note: data loss always has weight=1.0
         self.loss_fn = ContourLoss(
@@ -78,6 +89,7 @@ class ContourRefinerBase(nn.Module, abc.ABC):
             num_samples=props.profile_length,
             sample_step=props.sample_step,
             laplacian_window_size=props.laplacian_window_size,
+            shape_loss_weight=props.shape_loss_weight,
         )
 
         self.optimizer = None
@@ -137,6 +149,10 @@ class ContourRefinerBase(nn.Module, abc.ABC):
         )
         return profiles, sub_indices, valid_mask
 
+    def get_regularization_loss(self) -> dict[str, torch.Tensor]:
+        """Returns refiner-specific regularization losses (e.g. RBF weight decay)."""
+        return {}
+
     def compute_losses(
         self,
         image: torch.Tensor,
@@ -160,6 +176,10 @@ class ContourRefinerBase(nn.Module, abc.ABC):
         # Template regularization from template model (anchor, smoothness)
         # Returns dict like {"template_param_anchor": loss, "template_param_laplacian": loss}
         reg_losses = self.template_model.get_regularization_loss()
+
+        # Refiner regularization (e.g. RBF weights)
+        refiner_reg = self.get_regularization_loss()
+        reg_losses.update(refiner_reg)
 
         # Check if explicit edges are defined (e.g. for 3D meshes)
         edges = getattr(self, "edges", None)
@@ -239,8 +259,11 @@ class ContourRefinerBase(nn.Module, abc.ABC):
             _ = self.compute_losses(image, sampling_data=sampling_data)
             raw_losses = self.loss_fn._raw_losses
 
-            # Data loss magnitude (reference for scaling)
-            L_data = raw_losses.get("data", torch.tensor(0.0)).item()
+            # Data loss magnitude (reference for scaling) = Correlation + Shape
+            L_corr = raw_losses.get("correlation", torch.tensor(0.0)).item()
+            L_shape = raw_losses.get("shape", torch.tensor(0.0)).item()
+            w_shape = self.loss_fn.w_shape.item()
+            L_data = L_corr + w_shape * L_shape
             if L_data < 1e-8:
                 return  # Can't adapt if data loss is negligible
 
@@ -251,8 +274,8 @@ class ContourRefinerBase(nn.Module, abc.ABC):
             # Note: get_weight/set_weight work for all regularizers automatically
             # because ContourLoss dynamically registers weight buffers from RegularizerType
             for loss_name, L_reg_tensor in raw_losses.items():
-                if loss_name == "data":
-                    continue  # Don't adapt data loss weight
+                if loss_name in ("correlation", "shape"):
+                    continue  # Don't adapt data term components
 
                 L_reg = L_reg_tensor.item()
                 if L_reg < 1e-8:
@@ -260,6 +283,9 @@ class ContourRefinerBase(nn.Module, abc.ABC):
 
                 # Get target ratio from props (single source of truth)
                 target_ratio = self.props.get_target_ratio(loss_name)
+
+                if target_ratio <= 0:
+                    continue  # Skip adaptation for static constraints
 
                 # Compute target weight: w = (target_ratio * L_data) / L_reg
                 w_target = target_ratio * L_data / L_reg
@@ -490,6 +516,7 @@ class ContourRefiner(ContourRefinerBase):
     ):
         super().__init__(props, template_model)
         self.contour_param = nn.Parameter(initial_contour.clone())
+        self.register_buffer("initial_contour", initial_contour.clone())
         self.capture_initial_state()
 
     @property
@@ -499,6 +526,14 @@ class ContourRefiner(ContourRefinerBase):
     @property
     def points_for_regularization(self) -> torch.Tensor:
         return self.contour_param
+
+    def get_regularization_loss(self) -> dict[str, torch.Tensor]:
+        """Penalize deviation from initialization."""
+        return {
+            RegularizerType.CONTOUR_ANCHOR.value: (self.contour - self.initial_contour)
+            .pow(2)
+            .mean()
+        }
 
 
 class BSplineContourRefiner(ContourRefinerBase):
@@ -525,6 +560,7 @@ class BSplineContourRefiner(ContourRefinerBase):
         target = initial_contour.float()
         initial_cp = torch.linalg.lstsq(M_init, target).solution
         self.control_points = nn.Parameter(initial_cp)
+        self.register_buffer("initial_control_points", initial_cp.clone())
 
         # Precompute evaluation and derivative matrices
         self.register_buffer(
@@ -555,6 +591,16 @@ class BSplineContourRefiner(ContourRefinerBase):
         tangents = self.M_deriv @ self.control_points
         normals = torch.stack([-tangents[:, 1], tangents[:, 0]], dim=1)
         return F.normalize(normals, dim=-1)
+
+    def get_regularization_loss(self) -> dict[str, torch.Tensor]:
+        """Penalize deviation of control points from initialization."""
+        return {
+            RegularizerType.CONTOUR_ANCHOR.value: (
+                self.control_points - self.initial_control_points
+            )
+            .pow(2)
+            .mean()
+        }
 
 
 def create_tangential_smoothing_refiner(
@@ -640,40 +686,24 @@ def create_tangential_smoothing_refiner(
         props.adaptive_reg = adaptive_cfg
         props._reg_defaults = reg_defaults
 
-    elif adaptive:
-        # Use heuristic adaptive weights based on structure
+    else:
+        # Use robust static defaults.
+        # The previous adaptive heuristic (scaling by log of resolution) was often
+        # over-engineering. A strong static weight of 5.0 for spacing is generally
+        # sufficient to prevent bunching without dominating the data term.
+
+        # Default Tangential Laplacian (Spacing)
         if props.initial_loss_weights.get(RegularizerType.TANGENTIAL_LAPLACIAN.value, 0.0) == 0.0:
-            # Adaptive spacing weight based on contour resolution
-            num_vertices = len(initial_contour)
+            props.initial_loss_weights[RegularizerType.TANGENTIAL_LAPLACIAN.value] = 5.0
 
-            # For B-splines, use control points instead
-            if hasattr(props, "contour_num_control_points"):
-                num_effective = props.contour_num_control_points
-            elif hasattr(props, "rbf_num_control_points"):
-                num_effective = props.rbf_num_control_points
-            else:
-                num_effective = num_vertices
-
-            # Base weight scaled by log of resolution
-            base_spacing = 2.0
-            props.initial_loss_weights[RegularizerType.TANGENTIAL_LAPLACIAN.value] = (
-                base_spacing * np.log(1 + num_effective / 50)
-            )
-
+        # Default Normal Consistency (Fairing)
         if props.initial_loss_weights.get(RegularizerType.NORMAL_CONSISTENCY.value, 0.0) == 0.0:
-            # Adaptive fairing weight based on refiner type
             if refiner_class.__name__ == "BSplineContourRefiner":
                 props.initial_loss_weights[RegularizerType.NORMAL_CONSISTENCY.value] = 0.5
             elif refiner_class.__name__ == "RBFContourRefiner":
                 props.initial_loss_weights[RegularizerType.NORMAL_CONSISTENCY.value] = 0.1
             else:
                 props.initial_loss_weights[RegularizerType.NORMAL_CONSISTENCY.value] = 2.0
-    else:
-        # Fixed defaults
-        if props.initial_loss_weights.get(RegularizerType.TANGENTIAL_LAPLACIAN.value, 0.0) == 0.0:
-            props.initial_loss_weights[RegularizerType.TANGENTIAL_LAPLACIAN.value] = 5.0
-        if props.initial_loss_weights.get(RegularizerType.NORMAL_CONSISTENCY.value, 0.0) == 0.0:
-            props.initial_loss_weights[RegularizerType.NORMAL_CONSISTENCY.value] = 1.0
 
     spacing_w = props.get_initial_weight(RegularizerType.TANGENTIAL_LAPLACIAN)
     fairing_w = props.get_initial_weight(RegularizerType.NORMAL_CONSISTENCY)
@@ -740,6 +770,12 @@ class RBFContourRefiner(ContourRefinerBase):
 
         self.register_buffer("initial_contour", initial_contour.clone())
 
+        # Check regularization safety
+        if props.get_initial_weight(RegularizerType.RBF_WEIGHT_DECAY) <= 0:
+            logging.warning(
+                "RBF refiner initialized with 0.0 weight decay. This is ill-posed and may lead to infinite drift."
+            )
+
         # 1. Select Control Points (Centers)
         # Simple strided subsampling of the initial contour
         num_cp = props.rbf_num_control_points
@@ -758,15 +794,61 @@ class RBFContourRefiner(ContourRefinerBase):
         # Initialize to zero (no deformation)
         self.rbf_weights = nn.Parameter(torch.zeros_like(self.control_points))
 
+        # 2a. Heuristic for Sigma if requested (<= 0.0)
+        sigma = props.rbf_kernel_sigma
+        if sigma <= 0.0:
+            if num_cp > 1:
+                # Compute average distance to nearest neighbor for control points
+                # cp_dists: (K, K)
+                cp_dists = torch.cdist(self.control_points, self.control_points)
+                # Add large value to diagonal to ignore self-distance
+                eye = torch.eye(num_cp, device=cp_dists.device)
+                cp_dists = cp_dists + eye * 1e9
+                # Nearest neighbor distance
+                nn_dist = cp_dists.min(dim=1).values.mean()
+                # Heuristic: sigma should cover the gap. 2x spacing is usually safe.
+                sigma = nn_dist * 2.0
+
+                # Safety check for degenerate contours (all points at same location)
+                if sigma < 1e-6:
+                    logging.warning("RBF control points are co-located. Defaulting sigma to 1.0.")
+                    sigma = torch.tensor(1.0, device=self.control_points.device)
+
+                logging.info(
+                    f"Auto-configured RBF sigma: {sigma.item():.2f} (avg spacing: {nn_dist.item():.2f})"
+                )
+            else:
+                sigma = torch.tensor(20.0, device=self.control_points.device)  # Fallback
+
+        self.register_buffer("sigma", sigma)
+
         # 3. Precompute Kernel Matrix (Gaussian)
         # Phi_ij = exp(-||x_i - c_j||^2 / 2sigma^2)
         dists = torch.cdist(self.initial_contour, self.control_points)  # (N, K)
-        kernel_matrix = torch.exp(-(dists.pow(2)) / (2 * props.rbf_kernel_sigma**2))
+        kernel_matrix = torch.exp(-(dists.pow(2)) / (2 * sigma**2))
 
         # Normalize rows (Partition of Unity) to ensure translation reproduction
         # This prevents vertices "sticking" in gaps between control points
         kernel_sum = kernel_matrix.sum(dim=1, keepdim=True)
         self.register_buffer("kernel_matrix", kernel_matrix / (kernel_sum + 1e-8))
+
+        # 4. Auto-configure Weight Decay (Force Balance)
+        # If the user hasn't explicitly set a weight, we calculate it based on physics.
+        # Formula: lambda ~ 1 / (2 * D * sigma)
+        if RegularizerType.RBF_WEIGHT_DECAY.value not in props.initial_loss_weights:
+            sigma_template = template_model.props.sigma
+            target_displacement = 5.0  # Allow ~5px movement before penalty dominates
+
+            # Avoid division by zero
+            if sigma_template > 1e-6:
+                calc_weight = 1.0 / (2.0 * target_displacement * sigma_template)
+            else:
+                calc_weight = 0.1
+
+            logging.info(
+                f"Auto-configured RBF weight decay: {calc_weight:.4f} (target_disp={target_displacement}px, sigma={sigma_template})"
+            )
+            self.loss_fn.set_weight(RegularizerType.RBF_WEIGHT_DECAY, calc_weight)
 
         self.capture_initial_state()
 
@@ -780,3 +862,45 @@ class RBFContourRefiner(ContourRefinerBase):
     def points_for_regularization(self) -> torch.Tensor:
         # We regularize the output contour to ensure valid geometry
         return self.contour
+
+    def get_regularization_loss(self) -> dict[str, torch.Tensor]:
+        """Penalize the magnitude of RBF weights to encourage minimal deformation.
+
+        Reasoning for Weight Setting (L2 Regularization):
+            The weight lambda controls the 'stiffness' of the deformation field.
+            Force Balance Approximation: F_data = F_elastic
+            - F_data ~ 1 / sigma_template (gradient of correlation loss)
+            - F_elastic = 2 * lambda * displacement (gradient of L2 penalty)
+
+            To limit displacement to roughly D pixels:
+            lambda ~ 1 / (2 * D * sigma_template)
+
+            This is automatically configured in __init__ if not provided.
+        """
+        return {RegularizerType.RBF_WEIGHT_DECAY.value: (self.rbf_weights**2).mean()}
+
+    def compute_deformation(self, points: torch.Tensor) -> torch.Tensor:
+        """Computes the displacement vector at arbitrary points in space."""
+        # points: (M, 2)
+        # control_points: (K, 2)
+        dists = torch.cdist(points, self.control_points)  # (M, K)
+        # Kernel
+        kernel_matrix = torch.exp(-(dists.pow(2)) / (2 * self.sigma**2))
+        # Normalize (Partition of Unity)
+        kernel_sum = kernel_matrix.sum(dim=1, keepdim=True)
+        normalized_kernel = kernel_matrix / (kernel_sum + 1e-8)
+        return normalized_kernel @ self.rbf_weights
+
+    def visualize_rbf_field(self, ax: Any | None = None, title: str = "RBF Deformation"):
+        """Visualizes the RBF control points and displacement vectors."""
+        # Lazy import to avoid circular dependency
+        from diffmeshopt.opt2d.vis import plot_rbf_deformation
+
+        plot_rbf_deformation(
+            self.initial_contour,
+            self.contour,
+            self.control_points,
+            self.rbf_weights,
+            ax=ax,
+            title=title,
+        )

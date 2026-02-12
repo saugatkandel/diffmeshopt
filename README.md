@@ -18,6 +18,8 @@ The core logic is located in `diffmeshopt/opt2d/`.
 *   `diffmeshopt/opt2d/vis.py`: Visualization utilities.
 *   `diffmeshopt/opt2d/trainer.py`: Manages the training loop, logging, and checkpointing.
 
+The `examples/` directory contains standalone scripts for analyzing specific components (e.g., `analyze_contour_anchor.py`, `compare_refiners.py`).
+
 ## Project Documentation
 
 For a detailed breakdown of the project's design, goals, and current status, please see:

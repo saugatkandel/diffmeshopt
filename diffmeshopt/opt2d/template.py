@@ -182,8 +182,9 @@ class BaseTemplateModel(nn.Module, abc.ABC):
         losses = {}
 
         # Sigma
+        sigma_ref = torch.clamp(self.sigma_init, min=1e-6)
         losses[RegularizerType.ANCHOR_SIGMA.value] = (
-            (self.log_sigma - self.sigma_init.log()).pow(2).mean()
+            (self.log_sigma - sigma_ref.log()).pow(2).mean()
         )
 
         # Peak Dist
@@ -194,16 +195,23 @@ class BaseTemplateModel(nn.Module, abc.ABC):
         else:
             sigma2 = sigma1 * self.log_sigma_ratio.exp()
         peak_dist = (sigma1 + sigma2) * (self.props.min_peak_ratio / 2.0 + self.log_excess.exp())
+
+        # Clamp init value to avoid log(0) -> -inf
+        peak_dist_ref = torch.clamp(self.peak_dist_init, min=1e-6)
         losses[RegularizerType.ANCHOR_PEAK_DIST.value] = (
-            (peak_dist.log() - self.peak_dist_init.log()).pow(2).mean()
+            (peak_dist.log() - peak_dist_ref.log()).pow(2).mean()
         )
 
         if not self.props.symmetric:
             losses[RegularizerType.ANCHOR_SIGMA_RATIO.value] = (
-                (self.log_sigma_ratio - self.sigma_ratio_init.log()).pow(2).mean()
+                (self.log_sigma_ratio - torch.clamp(self.sigma_ratio_init, min=1e-6).log())
+                .pow(2)
+                .mean()
             )
             losses[RegularizerType.ANCHOR_AMP_RATIO.value] = (
-                (self.log_amp_ratio - self.amp_ratio_init.log()).pow(2).mean()
+                (self.log_amp_ratio - torch.clamp(self.amp_ratio_init, min=1e-6).log())
+                .pow(2)
+                .mean()
             )
 
         return losses

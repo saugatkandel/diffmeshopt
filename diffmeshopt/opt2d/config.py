@@ -21,6 +21,7 @@ class RegularizerType(Enum):
     EDGE_LENGTH = "edge_length"  # Edge length uniformity
     TANGENTIAL_LAPLACIAN = "tangential_laplacian"  # Tangential Laplacian for point spacing
     NORMAL_CONSISTENCY = "normal_consistency"  # Normal/curvature smoothness (fairing)
+    CONTOUR_ANCHOR = "contour_anchor"  # Anchor to initialization (L2 distance)
 
     # Template parameter regularizers
     # Anchors (L2 proximity to initialization)
@@ -35,7 +36,17 @@ class RegularizerType(Enum):
     SMOOTH_SIGMA_RATIO = "smooth_sigma_ratio"
     SMOOTH_AMP_RATIO = "smooth_amp_ratio"
 
-    TEMPLATE_SHAPE = "template_shape"  # Shape/profile consistency
+    # Refiner parameter regularizers
+    RBF_WEIGHT_DECAY = "rbf_weight_decay"  # Penalize RBF weight magnitude
+
+
+class RegularizationStrategy(Enum):
+    """High-level strategies for configuring regularization weights."""
+
+    MANUAL = "manual"  # Use provided weights directly
+    TANGENTIAL_SMOOTHING = "tangential_smoothing"  # Prevent shrinking, enforce spacing
+    STRONG_SMOOTHING = "strong_smoothing"  # High regularization for noisy data
+    MINIMAL = "minimal"  # Data-driven, minimal constraints
 
 
 @dataclass
@@ -61,17 +72,30 @@ class RegularizerDefaults:
 
     regularizers: dict[RegularizerType, RegularizerConfig] = field(
         default_factory=lambda: {
+            # Weight Derivation (Force Balance Heuristic):
+            # We want the regularization force to balance the data force at a specific
+            # displacement limit D (e.g., 5 pixels).
+            # F_data approx 1 / sigma_template
+            # F_reg approx 2 * weight * D
+            # weight approx 1 / (2 * D * sigma_template)
+            # For D=5.0, sigma=1.0 -> weight = 0.1
             # Contour geometry regularizers
             RegularizerType.TANGENTIAL_LAPLACIAN: RegularizerConfig(
-                static_weight=1.0, target_ratio=0.1
+                static_weight=5.0,  # Strong force to ensure uniform spacing
+                target_ratio=0.0,  # Static constraint
             ),
             RegularizerType.NORMAL_CONSISTENCY: RegularizerConfig(
-                static_weight=1.0, target_ratio=0.1
+                static_weight=2.0,
+                target_ratio=0.0,  # Static constraint
             ),
             RegularizerType.CONTOUR_LAPLACIAN: RegularizerConfig(
-                static_weight=0.0, target_ratio=0.1
+                static_weight=0.0, target_ratio=0.0
             ),
-            RegularizerType.EDGE_LENGTH: RegularizerConfig(static_weight=0.0, target_ratio=0.1),
+            RegularizerType.EDGE_LENGTH: RegularizerConfig(static_weight=0.0, target_ratio=0.0),
+            RegularizerType.CONTOUR_ANCHOR: RegularizerConfig(
+                static_weight=0.1,
+                target_ratio=0.01,  # Allows ~5px movement
+            ),
             # Template parameter regularizers
             RegularizerType.ANCHOR_SIGMA: RegularizerConfig(static_weight=0.0, target_ratio=0.0),
             RegularizerType.ANCHOR_PEAK_DIST: RegularizerConfig(
@@ -93,7 +117,10 @@ class RegularizerDefaults:
             RegularizerType.SMOOTH_AMP_RATIO: RegularizerConfig(
                 static_weight=0.0, target_ratio=0.01
             ),
-            RegularizerType.TEMPLATE_SHAPE: RegularizerConfig(static_weight=1.0, target_ratio=0.1),
+            RegularizerType.RBF_WEIGHT_DECAY: RegularizerConfig(
+                static_weight=0.1,
+                target_ratio=0.0,  # Static (physics-based, allows ~5px movement)
+            ),
         }
     )
 
@@ -187,6 +214,7 @@ class ContourRefinerProps:
         sample_step (float): Step size between samples in the profile (usually 1.0 pixel).
         num_sampled_profiles (int): Number of profiles to sample stochastically per step.
         laplacian_window_size (int): Window size for Laplacian smoothing of the contour.
+        shape_loss_weight (float): Weight for the template shape consistency loss (part of data term).
         adaptive_reg (AdaptiveRegularizationProps | None): Configuration for adaptive weights.
         _reg_defaults (RegularizerDefaults): Internal registry of default weights.
     """
@@ -205,8 +233,10 @@ class ContourRefinerProps:
     num_sampled_profiles: int = 256
     # Geometry
     laplacian_window_size: int = 3
+    shape_loss_weight: float = 1.0
     # Adaptive regularization (optional)
     adaptive_reg: AdaptiveRegularizationProps | None = None
+    regularization_strategy: RegularizationStrategy = RegularizationStrategy.TANGENTIAL_SMOOTHING
     # Global regularizer defaults (single source of truth)
     _reg_defaults: RegularizerDefaults = field(default_factory=RegularizerDefaults.get_defaults)
 
@@ -287,7 +317,7 @@ class RBFContourRefinerProps(ContourRefinerProps):
     """Properties for the RBFContourRefiner."""
 
     rbf_num_control_points: int = 32
-    rbf_kernel_sigma: float = 20.0
+    rbf_kernel_sigma: float = 0.0  # If <= 0.0, auto-calculated from control point spacing
 
 
 @dataclass
