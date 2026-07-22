@@ -147,8 +147,14 @@ def compute_metrics_from_map(
         dm = distance_map.unsqueeze(0)
     else:
         dm = distance_map
+    padding_mode = "border"
+    if dm.device.type == "mps":
+        padding_mode = "zeros"
+        grid = grid.clamp(-1, 1)
 
-    dists = F.grid_sample(dm, grid, align_corners=True, padding_mode="border")
+    dists = F.grid_sample(dm, grid, align_corners=True, padding_mode=padding_mode)
+
+    # dists = F.grid_sample(dm, grid, align_corners=True, padding_mode="border")
 
     # (1, 1, 1, N) -> (N,)
     dists = dists.view(-1)

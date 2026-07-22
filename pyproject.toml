@@ -31,6 +31,7 @@ dependencies = [
     "rich>=14.2.0,<15",
     "tensorboard>=2.20.0,<3",
     "optuna>=4.7.0,<5",
+    "tiktoken>=0.13.0",
 ]
 
 [project.scripts]
@@ -43,16 +44,13 @@ notebook = [
     "jupyterlab>=4.5.1,<5",
     "ipywidgets>=8.1.8,<9",
 ]
-cryoet = [
-    "zarr>=3.1.5,<4",
-    "ome-zarr>=0.12.2,<0.13",
-    "cryoet-data-portal>=4.5.0,<5",
-]
+cryoet = ["cryoet-data-portal>=4.5.0,<5", "copick>=1.24.0,<2"]
 test = ["pytest>=8.0.0"]
-pytorch3d = [
-    "setuptools",
-    "pytorch3d @ git+https://github.com/facebookresearch/pytorch3d.git", # 3D geometry
-]
+#pytorch3d = [
+#    "setuptools",
+#    "pytorch3d @ git+https://github.com/facebookresearch/pytorch3d.git", # 3D geometry
+#]
+macos = ["torch>=2.9.1,<3", "torchvision>=0.24.1,<0.25"]
 
 # --- RUFF SETTINGS ---
 [tool.ruff]
@@ -87,10 +85,34 @@ packages = ["diffmeshopt"]
 allow-direct-references = true
 
 
+# --- UV INTEGRATION ---
+# Add near the bottom of the file
+[dependency-groups]
+dev = [
+    # notebook
+    "ipykernel>=7.1.0,<8",
+    "plotly>=6.5.1,<7",
+    "jupyterlab>=4.5.1,<5",
+    "ipywidgets>=8.1.8,<9",
+
+    # cryoet
+    "cryoet-data-portal>=4.5.0,<5",
+    "copick>=1.24.0,<2",
+    # test
+    "pytest>=8.0.0",
+
+    # macos
+    "torch>=2.9.1,<3",
+    "torchvision>=0.24.1,<0.25",
+]
+
+[tool.uv]
+default-groups = ["dev"]
+
 # --- PIXI INTEGRATION ---
 [tool.pixi.workspace]
 channels = ["conda-forge"]
-platforms = ["linux-64"]
+platforms = ["linux-64", "osx-arm64"]
 
 [tool.pixi.dependencies]
 python = "3.13.*"
@@ -108,6 +130,7 @@ pytest = "pytest tests/opt2d"
 # Environments are now simple lists of features
 default = { features = ["gpu", "test", "localdev"] }
 ci = { features = ["cpu", "test"] }
+macos = { features = ["macos-gpu", "test", "localdev"] }
 
 # --- FEATURES ---
 
@@ -122,13 +145,22 @@ diffmeshopt = { path = ".", editable = true, extras = ["notebook", "cryoet"] }
 [tool.pixi.feature.cpu.pypi-options]
 extra-index-urls = ["https://download.pytorch.org/whl/cpu"]
 index-strategy = "unsafe-best-match"
-no-build-isolation = ["pytorch3d"]
+#no-build-isolation = ["pytorch3d"]
 
-[tool.pixi.feature.cpu.pypi-dependencies]
+[tool.pixi.feature.cpu.target.linux-64.pypi-dependencies]
 torch = { version = ">=2.9.1, <3", index = "https://download.pytorch.org/whl/cpu" }
 torchvision = { version = ">=0.24.1, <0.25", index = "https://download.pytorch.org/whl/cpu" }
+
+[tool.pixi.feature.cpu.target.osx-arm64.pypi-dependencies]
+torch = ">=2.9.1, <3"
+torchvision = ">=0.24.1, <0.25"
+
 
 [tool.pixi.feature.gpu.pypi-dependencies]
 torch = ">=2.9.1, <3"
 torchvision = ">=0.24.1, <0.25"
 #pytorch3d = { git = "https://github.com/facebookresearch/pytorch3d.git" }
+
+[tool.pixi.feature.macos-gpu.pypi-dependencies]
+torch = ">=2.9.1, <3"
+torchvision = ">=0.24.1, <0.25"

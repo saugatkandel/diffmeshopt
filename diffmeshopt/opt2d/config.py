@@ -2,6 +2,11 @@ from dataclasses import dataclass, field
 from enum import Enum
 
 
+class DataLossType(Enum):
+    BIGAUSSIAN_CORRELATION = "bigaussian_correlation"
+    BIGAUSSIAN_WASSERSTEIN = "bigaussian_wasserstein"
+
+
 class RegularizerType(Enum):
     """Central registry of all regularizer loss types in the system.
 
@@ -192,22 +197,22 @@ class AdaptiveRegularizationProps:
 class ContourRefinerProps:
     """Properties for the ContourRefiner.
 
-    Loss weights can be overridden via initial_loss_weights dict.
+    Regularization weights can be overridden via initial_regularization_weights dict.
     Keys must match those in RegularizerDefaults (single source of truth).
 
     When adaptive_reg is enabled:
     - Weights start from static defaults in RegularizerDefaults
-    - Can be overridden with initial_loss_weights
+    - Can be overridden with initial_regularization_weights
     - Adapt during optimization according to target_ratios
 
     When adaptive_reg is None/disabled:
     - Uses static defaults from RegularizerDefaults
-    - Can be overridden with initial_loss_weights
+    - Can be overridden with initial_regularization_weights
 
     Parameters:
         num_steps (int): Number of optimization steps.
         learning_rate (float): Learning rate for the optimizer (Adam).
-        initial_loss_weights (dict): Overrides for default regularizer weights.
+        initial_regularization_weights (dict): Overrides for default regularizer weights.
                                      Keys should match RegularizerType values.
         profile_length (int): Length of the sampled intensity profile in pixels.
         profile_width (int): Width of the sampling strip (averaging across tangent).
@@ -221,14 +226,15 @@ class ContourRefinerProps:
 
     num_steps: int = 100
     learning_rate: float = 0.1
-    # Optional overrides for initial weights (dict keys match RegularizerDefaults)
+    data_loss_type: DataLossType = DataLossType.BIGAUSSIAN_CORRELATION
+    # Optional overrides for initial regularization weights (dict keys match RegularizerDefaults)
     # Note: data loss always has weight=1.0 and cannot be overridden
-    initial_loss_weights: dict[str, float] = field(
+    initial_regularization_weights: dict[str, float] = field(
         default_factory=dict  # Regularizers: if not specified, uses RegularizerDefaults
     )
     # Sampling
     profile_length: int = 51
-    profile_width: int = 1
+    profile_width: int = 5
     sample_step: float = 1.0
     num_sampled_profiles: int = 256
     # Geometry
@@ -244,7 +250,7 @@ class ContourRefinerProps:
         """Get initial weight for a regularizer at optimization start.
 
         Priority order (first match wins):
-        1. Explicit value in initial_loss_weights dict (user override)
+        1. Explicit value in initial_regularization_weights dict (user override)
         2. Static default from RegularizerDefaults (global defaults)
         3. Zero if regularizer not in RegularizerDefaults (unknown loss)
 
@@ -266,10 +272,10 @@ class ContourRefinerProps:
                 return 0.0
 
         # Check if explicitly overridden (support both string and enum keys)
-        if loss_name in self.initial_loss_weights:
-            return self.initial_loss_weights[loss_name]
-        if loss_name.value in self.initial_loss_weights:
-            return self.initial_loss_weights[loss_name.value]
+        if loss_name in self.initial_regularization_weights:
+            return self.initial_regularization_weights[loss_name]
+        if loss_name.value in self.initial_regularization_weights:
+            return self.initial_regularization_weights[loss_name.value]
 
         # Use static default from single source of truth
         if loss_name in self._reg_defaults.regularizers:
@@ -326,7 +332,7 @@ class TemplateProps:
 
     Template parameters define the characteristic double-peak intensity profile.
 
-    Regularization weights are now handled via ContourRefinerProps.initial_loss_weights
+    Regularization weights are now handled via ContourRefinerProps.initial_regularization_weights
     using RegularizerType keys (e.g. "anchor_sigma", "smooth_peak_dist").
 
     Parameters:

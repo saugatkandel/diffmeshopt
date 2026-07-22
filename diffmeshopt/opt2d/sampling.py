@@ -2,6 +2,7 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 
+import diffmeshopt.opt2d.debug as debug
 from diffmeshopt.opt2d.geometry import compute_normals
 
 
@@ -79,7 +80,12 @@ def sample_at_points(image: torch.Tensor, points: torch.Tensor) -> torch.Tensor:
     grid = torch.stack([grid_x, grid_y], dim=-1)
 
     # Sample
-    samples = F.grid_sample(image, grid, align_corners=True, padding_mode="border")
+
+    padding_mode = "border"
+    if image.device.type == "mps":
+        padding_mode = "zeros"
+        grid = grid.clamp(-1, 1)
+    samples = F.grid_sample(image, grid, align_corners=True, padding_mode=padding_mode)
 
     return samples.view(*original_shape).mean(dim=-1)
 
@@ -103,7 +109,12 @@ def sample_profiles(
     if normals is None:
         normals = compute_normals(contour)
     points = get_sampling_points(contour, normals, profile_length, sample_step, profile_width)
+    # print(
+    #    f"Sampling {points.shape} profiles of length {profile_length} and width {profile_width}."
+    # )
     samples = sample_at_points(image, points)
+    # print(f"Sampled {samples.shape} profiles from contour of length {contour.shape[0]}.")
+    # raise
 
     # Calculate validity mask
     # points: (N, K, width, 2) in (y, x) pixel coordinates
@@ -131,7 +142,12 @@ def _get_stratified_indices(
 
     # Stratified sampling: one random point per bin of size 'step'
     bin_starts = torch.arange(batch_size, device=device) * step
-    jitter = torch.rand(batch_size, device=device) * step
+
+    generator = None
+    if debug.DEBUG:
+        # print("Using debug generator for stratified sampling")
+        generator = debug.get_generator(device=device)
+    jitter = torch.rand(batch_size, device=device, generator=generator) * step
 
     indices = bin_starts + jitter
     return (indices % num_total).long()

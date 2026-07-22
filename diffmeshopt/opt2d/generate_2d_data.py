@@ -1,3 +1,5 @@
+# Get the directory containing the current script
+import importlib.resources
 import logging
 from pathlib import Path
 
@@ -13,6 +15,9 @@ from scipy.ndimage import (
     gaussian_filter,
 )
 from skimage import measure
+
+# 1. Get the path to your source folder, then .parent gets the root project directory
+PROJECT_ROOT = importlib.resources.files("diffmeshopt").joinpath("..").resolve()
 
 
 def generate_synthetic_data(shape=(256, 256), radius=60, center=(128, 128)):
@@ -159,7 +164,7 @@ def trim_data(image, contour, gt=None, margin=50):
         gt[:, 0] -= row_start
         gt[:, 1] -= col_start
 
-    return image, contour, gt
+    return image, contour, gt, row_start, col_start
 
 
 def generate_perturbed_dataset(real_path, output_path, trim_margin):
@@ -191,8 +196,9 @@ def generate_perturbed_dataset(real_path, output_path, trim_margin):
             # Load and perturb
             image, contour, gt = load_real_data(real_path, offset=offset, perturb=perturb)
 
+            untrimmed_shape = image.shape
             # Trim
-            image, contour, gt = trim_data(image, contour, gt, trim_margin)
+            image, contour, gt, row_start, col_start = trim_data(image, contour, gt, trim_margin)
 
             # Store in dataset
             dataset[name] = {
@@ -201,6 +207,9 @@ def generate_perturbed_dataset(real_path, output_path, trim_margin):
                 "gt": gt,
                 "offset": offset,
                 "perturb": perturb,
+                "row_start": row_start,
+                "col_start": col_start,
+                "untrimmed_shape": untrimmed_shape,
             }
 
             # Visualize
@@ -232,7 +241,7 @@ def generate_perturbed_dataset(real_path, output_path, trim_margin):
 @click.option(
     "--real-path",
     type=click.Path(path_type=Path),
-    default="/workspace/diffmeshopt/data/20289/denoised/data_slice123.pkl",
+    default=PROJECT_ROOT / "data/20289/denoised/data_slice123.pkl",
     help="Path to real data file.",
 )
 @click.option("--synthetic", is_flag=True, help="Force synthetic data generation.")
@@ -240,7 +249,7 @@ def generate_perturbed_dataset(real_path, output_path, trim_margin):
 @click.option(
     "--output",
     type=click.Path(path_type=Path),
-    default="/workspace/diffmeshopt/data/2d_training_data.pkl",
+    default=PROJECT_ROOT / "data/2d_training_data.pkl",
     help="Output path for the generated data.",
 )
 @click.option(
@@ -297,13 +306,26 @@ def main(
     if image is None:
         image, contour, gt = generate_synthetic_data()
 
+    untrimmed_shape = image.shape
     # Trim image around contour if requested
-    image, contour, gt = trim_data(image, contour, gt, trim_margin)
+    image, contour, gt, row_start, col_start = trim_data(image, contour, gt, trim_margin)
 
-    joblib.dump({"image": image, "contour": contour, "gt": gt}, output)
+    joblib.dump(
+        {
+            "image": image,
+            "contour": contour,
+            "gt": gt,
+            "row_start": row_start,
+            "col_start": col_start,
+            "untrimmed_shape": untrimmed_shape,
+        },
+        output,
+    )
     logging.info(f"Data saved to {output}")
     logging.info(f"Image shape: {image.shape}")
     logging.info(f"Contour shape: {contour.shape}")
+    logging.info(f"Row start: {row_start}, Col start: {col_start}")
+    logging.info(f"Image shape before trimming: {untrimmed_shape}")
 
     if visualize:
         vis_path = output.with_suffix(".png")

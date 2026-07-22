@@ -7,7 +7,7 @@
     },
     // --- 3. CORE PYTHON SETUP ---
     "python.languageServer": "Pylance",
-    "python.defaultInterpreterPath": "/workspace/diffmeshopt/.pixi/envs/default/bin/python",
+    "python.defaultInterpreterPath": "/Users/saugat/code/diffmeshopt/.venv/bin/python",
     "python.terminal.activateEnvInCurrentTerminal": false,
     "python.envFile": "${workspaceFolder}/.env",
     // --- 4. FORMATTING & LINTING (Google/LLVM Style) ---
@@ -68,7 +68,6 @@
         "ms-python.python",
         "ms-toolsai.jupyter",
         "charliermarsh.ruff",
-        "Google.geminicodeassist",
         "usernamehw.errorlens",
         "njpwerner.autodocstring",
         "tamasfe.even-better-toml",

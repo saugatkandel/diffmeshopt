@@ -9,6 +9,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+import diffmeshopt.opt2d.debug as debug_module
 from diffmeshopt.opt2d.config import (
     BSplineContourRefinerProps,
     ContourRefinerProps,
@@ -67,12 +68,15 @@ class ContourRefinerBase(nn.Module, abc.ABC):
 
         # Validate configuration consistency
         # This ensures that all defined regularizers have default configs in RegularizerDefaults
+
         self.props._reg_defaults.validate()
 
         # Resolve Regularization Strategy
         # This merges strategy-defined weights with user-provided overrides
         strategy_weights = resolve_strategy(
-            props.regularization_strategy, self.__class__.__name__, props.initial_loss_weights
+            props.regularization_strategy,
+            self.__class__.__name__,
+            props.initial_regularization_weights,
         )
 
         # Get initial weights (computed from ratios if not explicitly set)
@@ -84,7 +88,7 @@ class ContourRefinerBase(nn.Module, abc.ABC):
 
         # Note: data loss always has weight=1.0
         self.loss_fn = ContourLoss(
-            initial_weights=initial_weights,
+            initial_regularization_weights=initial_weights,
             template_props=template_model.props,
             num_samples=props.profile_length,
             sample_step=props.sample_step,
@@ -147,6 +151,8 @@ class ContourRefinerBase(nn.Module, abc.ABC):
             num_samples=self.props.num_sampled_profiles,
             normals=self.normals,
         )
+        # print(f"Sampled {profiles.shape} profiles from contour of length {self.contour.shape[0]}.")
+        # raise
         return profiles, sub_indices, valid_mask
 
     def get_regularization_loss(self) -> dict[str, torch.Tensor]:
@@ -162,7 +168,8 @@ class ContourRefinerBase(nn.Module, abc.ABC):
 
         Args:
             image: Input image
-            sampling_data: Optional pre-computed (profiles, sub_indices, valid_mask) to avoid re-sampling.
+            sampling_data: Optional pre-computed (profiles, sub_indices, valid_mask)
+                            to avoid re-sampling.
         """
         if sampling_data is None:
             sampling_data = self.sample_image_features(image)
@@ -341,7 +348,8 @@ class ContourRefinerBase(nn.Module, abc.ABC):
         image: torch.Tensor,
         ax: Any | None = None,
         save_path: str | Path | None = None,
-        title: str = "Profile Statistics",
+        norm: int = 1,
+        title: str = None,
     ):
         """
         Visualizes the statistics of sampled intensity profiles against the template.
@@ -357,10 +365,17 @@ class ContourRefinerBase(nn.Module, abc.ABC):
             save_path: Optional path to save the figure.
             title: Title for the plot.
         """
+
+        # if norm not in [1, 2]:
+        #    raise ValueError("norm must be 1 or 2 for L1 or L2 norm.")
+
+        if title is None:
+            title = f"L{norm} Profile Statistics"
+
         # Lazy import to keep visualization dependencies optional and separate
         import matplotlib.pyplot as plt
 
-        from diffmeshopt.opt2d.loss import BiGaussianLoss
+        from diffmeshopt.opt2d.loss import BiGaussianBaseLoss
         from diffmeshopt.opt2d.vis import plot_profile_statistics
 
         # 1. Sample profiles using the refiner's configuration
@@ -386,12 +401,15 @@ class ContourRefinerBase(nn.Module, abc.ABC):
 
             # Generate template profiles for all samples
             # Shape: (N, L) where N is number of samples
-            templates = BiGaussianLoss.get_bigaussian_profile(x=x_tensor, **template_params)
+            templates = BiGaussianBaseLoss.get_bigaussian_profile(x=x_tensor, **template_params)
 
             # Average template to get a single representative profile for plotting
             # This handles the "non-global" aspect by marginalizing over the contour
             if templates.ndim == 2:
-                mean_template = templates.mean(dim=0)
+                with debug_module.debug_warning(
+                    "Temporarily using L2 norm for averaging template profiles for visualization."
+                ):
+                    mean_template = templates.mean(dim=0)
             else:
                 mean_template = templates
 
@@ -410,6 +428,7 @@ class ContourRefinerBase(nn.Module, abc.ABC):
             ax=ax,
             template=mean_template,
             template_props=self.template_model.props,
+            norm=norm,
         )
 
         if save_path:
@@ -514,7 +533,9 @@ class ContourRefiner(ContourRefinerBase):
         props: ContourRefinerProps,
         template_model: BaseTemplateModel,
     ):
+
         super().__init__(props, template_model)
+
         self.contour_param = nn.Parameter(initial_contour.clone())
         self.register_buffer("initial_contour", initial_contour.clone())
         self.capture_initial_state()
@@ -545,12 +566,14 @@ class BSplineContourRefiner(ContourRefinerBase):
         props: BSplineContourRefinerProps,
         template_model: BaseTemplateModel,
     ):
+
         super().__init__(props, template_model)
         num_control_points = props.contour_num_control_points
         num_eval_points = len(initial_contour)
 
         logging.info(
-            f"Initializing BSplineContourRefiner with {num_control_points} control points, {num_eval_points} eval points."
+            f"Initializing BSplineContourRefiner with {num_control_points} control points, "
+            f"{num_eval_points} eval points."
         )
 
         # Fit initial control points to the initial contour
@@ -620,7 +643,8 @@ def create_tangential_smoothing_refiner(
     - Enabling Normal Consistency (Fairing) regularization (surface smoothness)
 
     Args:
-        refiner_class: The refiner class to instantiate (ContourRefiner, BSplineContourRefiner, etc.)
+        refiner_class: The refiner class to instantiate
+                        (ContourRefiner, BSplineContourRefiner, etc.)
         initial_contour: Initial contour vertices
         props: Refiner properties (will be copied and modified)
         template_model: Template model for intensity prior
@@ -634,25 +658,26 @@ def create_tangential_smoothing_refiner(
 
     Example:
         >>> # Static heuristic weights
-        >>> refiner = create_tangential_smoothing_refiner(BSplineContourRefiner, contour, props, template)
+        >>> refiner = create_tangential_smoothing_refiner(BSplineContourRefiner,
+                                                            contour, props, template)
         >>> # Enable dynamic adaptation
         >>> refiner = create_tangential_smoothing_refiner(
         ...     BSplineContourRefiner, contour, props, template, enable_adaptive_weights=True
         ... )
     """
-    from diffmeshopt.opt2d.props import AdaptiveRegularizationProps
+    from diffmeshopt.opt2d.config import AdaptiveRegularizationProps
 
     # Clone props to avoid side effects
     props = copy.copy(props)
 
     # Enforce the Tangential Smoothing configuration (disable shrinking)
-    props.initial_loss_weights[RegularizerType.CONTOUR_LAPLACIAN.value] = 0.0
-    props.initial_loss_weights[RegularizerType.EDGE_LENGTH.value] = 0.0
+    props.initial_regularization_weights[RegularizerType.CONTOUR_LAPLACIAN.value] = 0.0
+    props.initial_regularization_weights[RegularizerType.EDGE_LENGTH.value] = 0.0
 
     # Set tangential regularization weights
     if enable_adaptive_weights:
         # Enable dynamic weight adaptation during optimization
-        from diffmeshopt.opt2d.props import RegularizerConfig, RegularizerDefaults
+        from diffmeshopt.opt2d.config import RegularizerConfig, RegularizerDefaults
 
         adaptive_cfg = AdaptiveRegularizationProps(
             enabled=True,
@@ -693,17 +718,31 @@ def create_tangential_smoothing_refiner(
         # sufficient to prevent bunching without dominating the data term.
 
         # Default Tangential Laplacian (Spacing)
-        if props.initial_loss_weights.get(RegularizerType.TANGENTIAL_LAPLACIAN.value, 0.0) == 0.0:
-            props.initial_loss_weights[RegularizerType.TANGENTIAL_LAPLACIAN.value] = 5.0
+        if (
+            props.initial_regularization_weights.get(
+                RegularizerType.TANGENTIAL_LAPLACIAN.value, 0.0
+            )
+            == 0.0
+        ):
+            props.initial_regularization_weights[RegularizerType.TANGENTIAL_LAPLACIAN.value] = 5.0
 
         # Default Normal Consistency (Fairing)
-        if props.initial_loss_weights.get(RegularizerType.NORMAL_CONSISTENCY.value, 0.0) == 0.0:
+        if (
+            props.initial_regularization_weights.get(RegularizerType.NORMAL_CONSISTENCY.value, 0.0)
+            == 0.0
+        ):
             if refiner_class.__name__ == "BSplineContourRefiner":
-                props.initial_loss_weights[RegularizerType.NORMAL_CONSISTENCY.value] = 0.5
+                props.initial_regularization_weights[RegularizerType.NORMAL_CONSISTENCY.value] = (
+                    0.5
+                )
             elif refiner_class.__name__ == "RBFContourRefiner":
-                props.initial_loss_weights[RegularizerType.NORMAL_CONSISTENCY.value] = 0.1
+                props.initial_regularization_weights[RegularizerType.NORMAL_CONSISTENCY.value] = (
+                    0.1
+                )
             else:
-                props.initial_loss_weights[RegularizerType.NORMAL_CONSISTENCY.value] = 2.0
+                props.initial_regularization_weights[RegularizerType.NORMAL_CONSISTENCY.value] = (
+                    2.0
+                )
 
     spacing_w = props.get_initial_weight(RegularizerType.TANGENTIAL_LAPLACIAN)
     fairing_w = props.get_initial_weight(RegularizerType.NORMAL_CONSISTENCY)
@@ -737,17 +776,25 @@ class TangentialSmoothingContourRefiner(ContourRefiner):
     ):
         # Clone props to avoid side effects on the passed object
         props = copy.copy(props)
-        props.initial_loss_weights = props.initial_loss_weights.copy()
+        props.initial_regularization_weights = props.initial_regularization_weights.copy()
 
         # Enforce the specific configuration for this strategy
-        props.initial_loss_weights[RegularizerType.CONTOUR_LAPLACIAN.value] = 0.0
-        props.initial_loss_weights[RegularizerType.EDGE_LENGTH.value] = 0.0
+        props.initial_regularization_weights[RegularizerType.CONTOUR_LAPLACIAN.value] = 0.0
+        props.initial_regularization_weights[RegularizerType.EDGE_LENGTH.value] = 0.0
 
         # Set default tangential regularization weights if not specified
-        if props.initial_loss_weights.get(RegularizerType.TANGENTIAL_LAPLACIAN.value, 0.0) == 0.0:
-            props.initial_loss_weights[RegularizerType.TANGENTIAL_LAPLACIAN.value] = 5.0
-        if props.initial_loss_weights.get(RegularizerType.NORMAL_CONSISTENCY.value, 0.0) == 0.0:
-            props.initial_loss_weights[RegularizerType.NORMAL_CONSISTENCY.value] = (
+        if (
+            props.initial_regularization_weights.get(
+                RegularizerType.TANGENTIAL_LAPLACIAN.value, 0.0
+            )
+            == 0.0
+        ):
+            props.initial_regularization_weights[RegularizerType.TANGENTIAL_LAPLACIAN.value] = 5.0
+        if (
+            props.initial_regularization_weights.get(RegularizerType.NORMAL_CONSISTENCY.value, 0.0)
+            == 0.0
+        ):
+            props.initial_regularization_weights[RegularizerType.NORMAL_CONSISTENCY.value] = (
                 2.0  # Higher for vertex-based
             )
 
@@ -773,7 +820,8 @@ class RBFContourRefiner(ContourRefinerBase):
         # Check regularization safety
         if props.get_initial_weight(RegularizerType.RBF_WEIGHT_DECAY) <= 0:
             logging.warning(
-                "RBF refiner initialized with 0.0 weight decay. This is ill-posed and may lead to infinite drift."
+                "RBF refiner initialized with 0.0 weight decay. "
+                "This is ill-posed and may lead to infinite drift."
             )
 
         # 1. Select Control Points (Centers)
@@ -792,7 +840,7 @@ class RBFContourRefiner(ContourRefinerBase):
         # 2. Initialize Weights (Parameters)
         # Weights represent the displacement vectors at the control points
         # Initialize to zero (no deformation)
-        self.rbf_weights = nn.Parameter(torch.zeros_like(self.control_points))
+        self.rbf_weights = nn.Parameter(torch.zeros_like(self.control_points), requires_grad=True)
 
         # 2a. Heuristic for Sigma if requested (<= 0.0)
         sigma = props.rbf_kernel_sigma
@@ -815,17 +863,18 @@ class RBFContourRefiner(ContourRefinerBase):
                     sigma = torch.tensor(1.0, device=self.control_points.device)
 
                 logging.info(
-                    f"Auto-configured RBF sigma: {sigma.item():.2f} (avg spacing: {nn_dist.item():.2f})"
+                    f"Auto-configured RBF sigma: {sigma.item():.2f}"
+                    f" (avg spacing: {nn_dist.item():.2f})"
                 )
             else:
                 sigma = torch.tensor(20.0, device=self.control_points.device)  # Fallback
 
-        self.register_buffer("sigma", sigma)
+        self.register_buffer("sigma", torch.tensor(sigma))
 
         # 3. Precompute Kernel Matrix (Gaussian)
         # Phi_ij = exp(-||x_i - c_j||^2 / 2sigma^2)
         dists = torch.cdist(self.initial_contour, self.control_points)  # (N, K)
-        kernel_matrix = torch.exp(-(dists.pow(2)) / (2 * sigma**2))
+        kernel_matrix = torch.exp(-(dists.pow(2)) / (2 * self.sigma**2))
 
         # Normalize rows (Partition of Unity) to ensure translation reproduction
         # This prevents vertices "sticking" in gaps between control points
@@ -835,7 +884,7 @@ class RBFContourRefiner(ContourRefinerBase):
         # 4. Auto-configure Weight Decay (Force Balance)
         # If the user hasn't explicitly set a weight, we calculate it based on physics.
         # Formula: lambda ~ 1 / (2 * D * sigma)
-        if RegularizerType.RBF_WEIGHT_DECAY.value not in props.initial_loss_weights:
+        if RegularizerType.RBF_WEIGHT_DECAY.value not in props.initial_regularization_weights:
             sigma_template = template_model.props.sigma
             target_displacement = 5.0  # Allow ~5px movement before penalty dominates
 
@@ -846,10 +895,14 @@ class RBFContourRefiner(ContourRefinerBase):
                 calc_weight = 0.1
 
             logging.info(
-                f"Auto-configured RBF weight decay: {calc_weight:.4f} (target_disp={target_displacement}px, sigma={sigma_template})"
+                f"Auto-configured RBF weight decay: {calc_weight:.4f}"
+                f" (target_disp={target_displacement}px, sigma={sigma_template})"
             )
             self.loss_fn.set_weight(RegularizerType.RBF_WEIGHT_DECAY, calc_weight)
-
+            with debug_module.debug_warning("Temporary setting for RBF weight decay."):
+                w_decay = 0.001
+                self.loss_fn.set_weight(RegularizerType.RBF_WEIGHT_DECAY, w_decay)
+                print(f"Setting RBF weight decay to {w_decay}")
         self.capture_initial_state()
 
     @property
@@ -877,6 +930,7 @@ class RBFContourRefiner(ContourRefinerBase):
 
             This is automatically configured in __init__ if not provided.
         """
+        # print(f"RBF weights mean squared: {(self.rbf_weights**2).mean().item():.6f}")
         return {RegularizerType.RBF_WEIGHT_DECAY.value: (self.rbf_weights**2).mean()}
 
     def compute_deformation(self, points: torch.Tensor) -> torch.Tensor:

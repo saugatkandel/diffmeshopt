@@ -5,11 +5,12 @@ import numpy as np
 import torch
 from matplotlib.axes import Axes
 
+import diffmeshopt.opt2d.debug as debug_module
 import diffmeshopt.opt2d.geometry as geometry
 import diffmeshopt.opt2d.sampling as sampling
 from diffmeshopt.opt2d.config import ContourRefinerProps, TemplateProps
 from diffmeshopt.opt2d.geometry import get_bspline_matrix
-from diffmeshopt.opt2d.loss import BiGaussianLoss
+from diffmeshopt.opt2d.loss import BiGaussianBaseLoss
 
 
 def plot_prior_and_landscape_from_contour(
@@ -91,6 +92,7 @@ def plot_profile_statistics(
     ax: Axes | None = None,
     template: np.ndarray | torch.Tensor | None = None,
     template_props: TemplateProps | None = None,
+    norm: int = 1,
 ):
     """
     Visualizes the mean and spread of a batch of profiles.
@@ -108,18 +110,28 @@ def plot_profile_statistics(
     if isinstance(profiles, torch.Tensor):
         profiles = profiles.detach().cpu().numpy()
 
-    mean_profile = np.mean(profiles, axis=0)
-    std_profile = np.std(profiles, axis=0)
+    with debug_module.debug_warning(
+        "Temporary setting for profile norm calculations. Not sure how it works with L1 vs L2."
+    ):
+        if norm not in [1, 2]:
+            raise ValueError("norm must be 1 or 2 for L1 or L2 norm.")
 
-    if x is None:
-        x = np.arange(profiles.shape[1]) - (profiles.shape[1] - 1) / 2.0
+        if norm == 2:
+            mean_profile = np.mean(profiles, axis=0)
+            std_profile = np.std(profiles, axis=0)
+        elif norm == 1:
+            mean_profile = np.median(profiles, axis=0)
+            std_profile = np.median(np.abs(profiles - mean_profile), axis=0)
+
+        if x is None:
+            x = np.arange(profiles.shape[1]) - (profiles.shape[1] - 1) / 2.0
 
     show_plot = False
     if ax is None:
         fig, ax = plt.subplots(figsize=(8, 5))
         show_plot = True
 
-    ax.plot(x, mean_profile, label="Mean Profile", color="blue", linewidth=2)
+    ax.plot(x, mean_profile, label=f"L{norm} Mean Profile", color="blue", linewidth=2)
 
     ax.fill_between(
         x,
@@ -127,14 +139,14 @@ def plot_profile_statistics(
         mean_profile + std_profile,
         color="blue",
         alpha=0.2,
-        label="Standard Deviation",
+        label=f"L{norm} Standard Deviation",
     )
 
     if template is not None:
         if isinstance(template, torch.Tensor):
             template = template.detach().cpu().numpy()
     else:
-        template = BiGaussianLoss.get_bigaussian_profile(
+        template = BiGaussianBaseLoss.get_bigaussian_profile(
             x=torch.tensor(x, dtype=torch.float32),
             peak_dist=template_props.peak_dist,
             sigma=template_props.sigma,
@@ -153,7 +165,7 @@ def plot_profile_statistics(
 
 
 def _plot_landscape_from_signal(x, y_signal, template, ax):
-    """Visualize the Loss Landscape using ross-Correlation for various shifts."""
+    """Visualize the Loss Landscape using Cross-Correlation for various shifts."""
 
     shifts = np.linspace(-8, 8, 100)
     correlations = []
@@ -367,6 +379,15 @@ def plot_contour_crops(
             ax.plot(p2[:, 1], p2[:, 0], "c--", linewidth=1.5, alpha=0.8)
             ax.plot(b1[:, 1], b1[:, 0], "m:", linewidth=1.5, alpha=0.8, label="Boundaries")
             ax.plot(b2[:, 1], b2[:, 0], "m:", linewidth=1.5, alpha=0.8)
+            # ax.scatter(p1[:, 1], p1[:, 0], c="c", s=20, label="Peaks")
+            # ax.scatter(p2[:, 1], p2[:, 0], c="c", s=20)
+            # ax.scatter(b1[:, 1], b1[:, 0], c="m", s=20, label="Boundaries")
+            # ax.scatter(
+            #    b2[:, 1],
+            #    b2[:, 0],
+            #    c="m",
+            #    s=20,
+            # )
 
         if init_contour is not None:
             ax.plot(
@@ -379,6 +400,7 @@ def plot_contour_crops(
             )
 
         ax.plot(contour[:, 1], contour[:, 0], "b-", linewidth=2, label="Refined")
+        # ax.scatter(contour[idx, 1], contour[idx, 0], c="b", s=30, label="Refined")
 
         if gt_contour is not None:
             ax.plot(gt_contour[:, 1], gt_contour[:, 0], "k:", alpha=0.8, linewidth=2, label="GT")

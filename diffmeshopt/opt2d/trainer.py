@@ -138,6 +138,7 @@ class ContourLightningModule(pl_lightning.LightningModule):
         calc_hausdorff: bool = False,
         calc_p95: bool = False,
     ):
+
         super().__init__()
         self.refiner = refiner
         self.log_interval = log_interval
@@ -406,7 +407,7 @@ class OptimizationTrainer:
             callbacks=self._setup_callbacks(),
             logger=self._setup_loggers(),
             log_every_n_steps=self.config.log_interval,
-            accelerator="auto",
+            accelerator="cuda" if torch.cuda.is_available() else "cpu",
             devices=1,
             enable_model_summary=False,
             enable_progress_bar=self.config.enable_progress_bar,
@@ -556,6 +557,7 @@ class OptimizationTrainer:
     def plot_image(self):
         """Plots the default grid of cropped contour visualizations."""
         cb = next((c for c in self.trainer.callbacks if isinstance(c, ImageLoggerCallback)), None)
+        fig = None
         if cb:
             fig = cb.create_figure(self.model)
             if fig is not None:
@@ -563,7 +565,7 @@ class OptimizationTrainer:
                 plt.close(fig)
             return fig
         print("ImageLoggerCallback not found.")
-        return None
+        return fig
 
     def plot_full_view(
         self, plot_normals: bool = False, save_path: str | Path | None = None

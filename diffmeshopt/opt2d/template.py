@@ -388,6 +388,7 @@ class PerPointTemplateModel(BaseTemplateModel):
         self.edges = None
         # Use Laplacian loss for 2nd order smoothness (penalize curvature/kinks, not slope)
         window_size = getattr(props, "smoothness_window_size", 1)
+
         self.laplacian_loss_fn = LaplacianSmoothingLoss(window_size=window_size)
 
     def set_topology(self, edges: torch.Tensor | None) -> None:

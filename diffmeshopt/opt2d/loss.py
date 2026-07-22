@@ -1,23 +1,18 @@
+import abc
 import logging
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from diffmeshopt.opt2d.config import RegularizerType, TemplateProps
+from diffmeshopt.opt2d.config import DataLossType, RegularizerType, TemplateProps
 
 
-class BiGaussianLoss(nn.Module):
-    """Data loss comparing sampled intensity profiles to bi-Gaussian template.
+class BiGaussianBaseLoss(nn.Module, abc.ABC):
+    """Abstract base class for profile-matching data losses.
 
-    This loss measures how well the sampled intensity profiles from the image
-    match the expected double-peak bi-Gaussian pattern defined by template parameters.
-
-    Template parameters can be:
-    1. Fixed: Provided via template_props (stored as buffer)
-    2. Optimized: Passed dynamically via forward() (from TemplateModel.get_params())
-
-    The template is normalized (zero mean, unit std) to make correlation scale-invariant.
+    Handles spatial coordinate setup, bi-Gaussian template generation,
+    asymmetry penalties, and masked loss reduction.
     """
 
     def __init__(
@@ -25,28 +20,25 @@ class BiGaussianLoss(nn.Module):
         template_props: TemplateProps | None = None,
         num_samples: int = 51,
         sample_step: float = 1.0,
+        center_symmetry_weight: float = 0.0,
     ):
-        """
-        template_props: Properties defining the BiGaussian template (peak_dist, sigma, etc.).
-        num_samples: Length of the sampled profile vector.
-        sample_step: Distance between samples in pixels.
-        """
         super().__init__()
 
         if template_props is None:
             template_props = TemplateProps()
         self.peak_dist = template_props.peak_dist
         self.sigma = template_props.sigma
+        self.center_symmetry_weight = center_symmetry_weight
 
         # Initialize buffers
         self.register_buffer("x", torch.zeros(num_samples))
         self.register_buffer("template", torch.zeros(num_samples))
 
-        # Setup coordinate system
+        # Setup coordinate system and initial template
         self.update_sampling(num_samples, sample_step)
 
     def update_sampling(self, num_samples: int, sample_step: float):
-        """Update the internal coordinate system for a new sampling resolution."""
+        """Update internal coordinate system and template for a new sampling resolution."""
         self.profile_len = num_samples
         self.sample_step = sample_step
 
@@ -68,10 +60,7 @@ class BiGaussianLoss(nn.Module):
         amp1: float | torch.Tensor | None = None,
         amp2: float | torch.Tensor | None = None,
     ) -> torch.Tensor:
-        """
-        Generates the raw BiGaussian intensity profile.
-        """
-        # Defaults
+        """Generates the raw BiGaussian intensity profile."""
         if sigma1 is None:
             sigma1 = sigma if sigma is not None else 1.0
         if sigma2 is None:
@@ -81,9 +70,6 @@ class BiGaussianLoss(nn.Module):
         if amp2 is None:
             amp2 = 1.0
 
-        # Handle broadcasting for batch optimization
-        # We assume inputs are either scalars or (N,) tensors.
-        # We need (N, 1) for broadcasting against x (L,).
         def _ensure_dim(t):
             if isinstance(t, torch.Tensor) and t.ndim == 1:
                 return t.unsqueeze(-1)
@@ -95,19 +81,31 @@ class BiGaussianLoss(nn.Module):
         amp1 = _ensure_dim(amp1)
         amp2 = _ensure_dim(amp2)
 
-        # Peaks at +/- peak_dist / 2
         mu1 = -peak_dist / 2
         mu2 = peak_dist / 2
 
         template = amp1 * torch.exp(-((x - mu1) ** 2) / (2 * sigma1**2)) + amp2 * torch.exp(
             -((x - mu2) ** 2) / (2 * sigma2**2)
         )
-
-        # Normalize template so that correlation is 1.0 for perfect match
-        t_mean = template.mean(dim=-1, keepdim=True)
-        t_std = template.std(dim=-1, keepdim=True, unbiased=False)
-        template = (template - t_mean) / (t_std + 1e-8)
         return template
+
+    @abc.abstractmethod
+    def forward_metric(self, profiles: torch.Tensor, template: torch.Tensor) -> torch.Tensor:
+        """Compute the core similarity loss per profile."""
+        pass
+
+    def compute_asymmetry_loss(self, profiles: torch.Tensor) -> torch.Tensor:
+        """Computes penalty for asymmetric profiles around origin x=0.
+
+        If the contour is correctly centered on a bilayer, the left half
+        and flipped right half of the sampled profile will match.
+        """
+        # Flip profile along spatial dimension K
+        profiles_flipped = torch.flip(profiles, dims=[-1])
+
+        # Measure difference between profile and its reverse reflection
+        asymmetry = torch.mean(torch.abs(profiles - profiles_flipped), dim=-1)
+        return asymmetry
 
     def forward(
         self,
@@ -120,11 +118,6 @@ class BiGaussianLoss(nn.Module):
         amp2: torch.Tensor | None = None,
         mask: torch.Tensor | None = None,
     ) -> torch.Tensor:
-        # profiles: (N, K)
-        # Normalize profiles
-        mean = profiles.mean(dim=-1, keepdim=True)
-        std = profiles.std(dim=-1, keepdim=True, unbiased=False)
-        profiles_norm = (profiles - mean) / (std + 1e-8)
 
         if peak_dist is not None:
             template = self.get_bigaussian_profile(
@@ -139,20 +132,83 @@ class BiGaussianLoss(nn.Module):
         else:
             template = self.template
 
-        template = torch.atleast_2d(template)  # (N, K) for broadcasting
-        # Cross correlation
-        correlation = (profiles_norm * template).mean(dim=-1)
+        template = torch.atleast_2d(template)
 
-        # We want to maximize correlation, so minimize 1 - correlation
-        loss = 1.0 - correlation
+        # 1. Base profile match loss (Wasserstein or Correlation)
+        match_loss = self.forward_metric(profiles, template)
 
+        # 2. Symmetry constraint around origin
+        if self.center_symmetry_weight > 0.0:
+            asym_loss = self.compute_asymmetry_loss(profiles)
+            total_loss = match_loss + (self.center_symmetry_weight * asym_loss)
+        else:
+            total_loss = match_loss
+
+        # 3. Masked reduction
         if mask is not None:
             if mask.dtype == torch.bool:
                 mask = mask.float()
-            # Compute weighted mean (avoid division by zero)
-            return (loss * mask).sum() / (mask.sum() + 1e-8)
+            return (total_loss * mask).sum() / (mask.sum() + 1e-8)
 
-        return loss.mean()
+        return total_loss.mean()
+
+
+class BiGaussianCorrelationLoss(BiGaussianBaseLoss):
+    """Normalized cross-correlation data loss.
+
+    Measures pattern correlation between sampled profiles and the template.
+    Optimal for fine snapping near convergence (high frequency sensitivity).
+    """
+
+    def forward_metric(self, profiles: torch.Tensor, template: torch.Tensor) -> torch.Tensor:
+        # Standardize template
+        t_mean = template.mean(dim=-1, keepdim=True)
+        t_std = template.std(dim=-1, keepdim=True, unbiased=False)
+        template_norm = (template - t_mean) / (t_std + 1e-8)
+
+        # Standardize sampled profiles
+        p_mean = profiles.mean(dim=-1, keepdim=True)
+        p_std = profiles.std(dim=-1, keepdim=True, unbiased=False)
+        profiles_norm = (profiles - p_mean) / (p_std + 1e-8)
+
+        # Calculate 1 - correlation
+        correlation = (profiles_norm * template_norm).mean(dim=-1)
+        return 1.0 - correlation
+
+
+class BiGaussianWassersteinLoss(BiGaussianBaseLoss):
+    """1D Optimal Transport (Earth Mover's Distance) data loss.
+
+    Measures the spatial work required to transform sampled intensity CDFs into template CDFs.
+    Provides smooth, continuous gradients across large positional initial errors.
+    """
+
+    def __init__(
+        self,
+        template_props: TemplateProps | None = None,
+        num_samples: int = 51,
+        sample_step: float = 1.0,
+        temperature: float = 1.0,
+    ):
+        super().__init__(
+            template_props=template_props,
+            num_samples=num_samples,
+            sample_step=sample_step,
+        )
+        self.temperature = temperature
+
+    def forward_metric(self, profiles: torch.Tensor, template: torch.Tensor) -> torch.Tensor:
+        # 1. Convert profiles and template into 1D probability distributions
+        p_sample = torch.softmax(profiles / self.temperature, dim=-1)
+        p_template = torch.softmax(template / self.temperature, dim=-1)
+
+        # 2. Compute Cumulative Distribution Functions (CDFs)
+        cdf_sample = torch.cumsum(p_sample, dim=-1)
+        cdf_template = torch.cumsum(p_template, dim=-1)
+
+        # 3. 1D Wasserstein distance is the L1 distance between CDFs
+        # Scale by sample_step so the loss is denominated in pixel distance units
+        return torch.sum(torch.abs(cdf_sample - cdf_template), dim=-1) * self.sample_step
 
 
 class LaplacianSmoothingLoss(nn.Module):
@@ -363,11 +419,13 @@ class ContourLoss(nn.Module):
         template_props: TemplateProps | None = None,
         num_samples: int = 51,
         sample_step: float = 1.0,
+        data_loss_type: DataLossType = DataLossType.BIGAUSSIAN_CORRELATION,
         laplacian_window_size: int = 3,
         laplacian_mode: str = "full",
         shape_loss_weight: float = 1.0,
-        initial_weights: dict[str, float] | None = None,
+        initial_regularization_weights: dict[str, float] | None = None,
     ):
+
         super().__init__()
         logging.info("Initializing ContourLoss")
 
@@ -375,11 +433,11 @@ class ContourLoss(nn.Module):
         # This eliminates manual synchronization while using the correct PyTorch primitive
         # Buffers (not Parameters) are semantically correct for hyperparameters/weights
 
-        # Override weights dict: user-provided weights override defaults via initial_weights
+        # Override weights dict: user-provided weights override defaults via initial_regularization_weights
         # keys should match RegularizerType values (e.g. "contour_laplacian")
         weight_overrides = {}
-        if initial_weights:
-            for k, v in initial_weights.items():
+        if initial_regularization_weights:
+            for k, v in initial_regularization_weights.items():
                 # Try to match string key to RegularizerType
                 try:
                     reg_type = RegularizerType(k)
@@ -397,6 +455,7 @@ class ContourLoss(nn.Module):
 
         # Register shape loss weight explicitly (it is part of data term, not a regularizer)
         self.register_buffer("w_shape", torch.tensor(shape_loss_weight, dtype=torch.float32))
+        print("Shape loss weight", self.w_shape)
 
         # Storage for raw (unweighted) losses for adaptive weight computation
         self._raw_losses: dict[str, torch.Tensor] = {}
@@ -407,9 +466,16 @@ class ContourLoss(nn.Module):
         # - Easy to configure (each may need different parameters)
         # - No performance benefit to dynamic creation
         # - Only weights need dynamic registration (to ensure sync with RegularizerType)
-        self.data_loss_fn = BiGaussianLoss(
-            template_props=template_props, num_samples=num_samples, sample_step=sample_step
-        )
+        if data_loss_type == DataLossType.BIGAUSSIAN_CORRELATION:
+            self.data_loss_fn = BiGaussianCorrelationLoss(
+                template_props=template_props, num_samples=num_samples, sample_step=sample_step
+            )
+        elif data_loss_type == DataLossType.BIGAUSSIAN_WASSERSTEIN:
+            self.data_loss_fn = BiGaussianWassersteinLoss(
+                template_props=template_props, num_samples=num_samples, sample_step=sample_step
+            )
+        else:
+            raise ValueError(f"Unsupported data loss type: {data_loss_type}")
         self.laplacian_loss_fn = LaplacianSmoothingLoss(
             window_size=laplacian_window_size, mode=laplacian_mode
         )
@@ -536,6 +602,7 @@ class ContourLoss(nn.Module):
         # Compute weighted losses and total
         # Data Term = Correlation Loss + Weighted Shape Loss
         # Correlation loss always has weight=1.0
+
         weighted_shape_loss = self.w_shape * shape_loss
         total_data_loss = data_loss + weighted_shape_loss
         total_loss = total_data_loss
@@ -553,7 +620,7 @@ class ContourLoss(nn.Module):
             # Use get() with default 0.0 to ensure all regularizers appear in results
             # even if not computed (e.g. template losses for FixedTemplateModel)
             raw_loss = self._raw_losses.get(key, torch.tensor(0.0, device=profiles.device))
-
+            # print(f"{reg_type} weight: {self.get_weight(reg_type)}")
             weighted_loss = self.get_weight(reg_type) * raw_loss
             total_loss = total_loss + weighted_loss
             results[f"{key}_loss"] = weighted_loss

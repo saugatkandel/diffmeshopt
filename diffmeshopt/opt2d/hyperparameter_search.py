@@ -56,11 +56,13 @@ SEARCH_DEFAULTS = {
         "peak_dist": 4.0,
         "sigma_ratio": 1.0,
         "amp_ratio": 1.0,
+        "min_peak_ratio": 2.0,
     },
     "adaptive": {
         "update_interval": 10,
         "warmup_steps": 50,
     },
+    "shape_loss_weight": 1.0,
 }
 
 
@@ -116,6 +118,7 @@ class ExperimentRunner:
             """Pop key from p if present, else retrieve from original params."""
             if key in params_tracker:
                 return params_tracker.pop(key)
+
             return params.get(key, default)
 
         # Mark metadata as used
@@ -125,7 +128,7 @@ class ExperimentRunner:
         reg_defaults = RegularizerDefaults.get_defaults()
 
         # If adaptive, we set target ratios in defaults.
-        # If static, we set static weights in initial_loss_weights.
+        # If static, we set static weights in initial_regularization_weights.
         initial_weights = {}
 
         # Map search params to RegularizerTypes
@@ -134,11 +137,12 @@ class ExperimentRunner:
             "edge": [RegularizerType.EDGE_LENGTH],
             "normal": [RegularizerType.NORMAL_CONSISTENCY],
             "tangential": [RegularizerType.TANGENTIAL_LAPLACIAN],
-            "shape": [RegularizerType.TEMPLATE_SHAPE],
+            # "shape": [RegularizerType.TEMPLATE_SHAPE],
             "anchor": [
                 RegularizerType.ANCHOR_SIGMA_RATIO,
                 RegularizerType.ANCHOR_AMP_RATIO,
             ],
+            "contour_anchor": [RegularizerType.CONTOUR_ANCHOR],
             # We use a single smoothing weight for all template parameters.
             # Justification: Regularization losses are computed in log-space (relative changes).
             # A 10% change in sigma incurs the same penalty as a 10% change in peak_dist,
@@ -158,6 +162,8 @@ class ExperimentRunner:
                 if reg_mode == "adaptive":
                     # Update default config with searched ratio
                     ratio = use(f"ratio_{name}")
+                    ratio = 0.1 if ratio is None else ratio
+                    print(f"Setting adaptive ratio for {reg_type.value}: {ratio}")
                     # Keep static weight as 0.0 or 1.0 (doesn't matter much if adaptive is on,
                     # but good to have a starting point)
                     reg_defaults.regularizers[reg_type] = RegularizerConfig(
@@ -182,11 +188,14 @@ class ExperimentRunner:
 
         # 2. Refiner Props
         common_args = {
-            "num_steps": SEARCH_DEFAULTS["optimization"]["num_steps"],
-            "learning_rate": SEARCH_DEFAULTS["optimization"]["learning_rate"],
-            "initial_loss_weights": initial_weights,
+            "num_steps": use("num_steps", SEARCH_DEFAULTS["optimization"]["num_steps"]),
+            "learning_rate": use(
+                "learning_rate", SEARCH_DEFAULTS["optimization"]["learning_rate"]
+            ),
+            "initial_regularization_weights": initial_weights,
             "adaptive_reg": adaptive_props,
             "_reg_defaults": reg_defaults,
+            "shape_loss_weight": use("shape_loss_weight", SEARCH_DEFAULTS["shape_loss_weight"]),
         }
 
         refiner_mode = use("refiner")
@@ -213,12 +222,16 @@ class ExperimentRunner:
         # Always consume smoothness_window_size if present
         smooth_win = use("smoothness_window_size", 3)
 
+        # min peak ratio
+        min_peak_ratio = use("min_peak_ratio", SEARCH_DEFAULTS["template"]["min_peak_ratio"])
+
         t_args = {
             "symmetric": t_sym,
             "sigma": SEARCH_DEFAULTS["template"]["sigma"],
             "peak_dist": SEARCH_DEFAULTS["template"]["peak_dist"],
             "sigma_ratio": SEARCH_DEFAULTS["template"]["sigma_ratio"],
             "amp_ratio": SEARCH_DEFAULTS["template"]["amp_ratio"],
+            "min_peak_ratio": min_peak_ratio,
             "smoothness_window_size": smooth_win,
         }
 
