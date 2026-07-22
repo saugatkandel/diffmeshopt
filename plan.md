@@ -61,6 +61,12 @@ After training on a few segmentations, it should work quite well at the first pa
 
 ## 5. Initial 2D Testing Plan
 
+### Recent Findings (2026-07)
+- Added a selectable 2D data term: cross-correlation and Wasserstein.
+- Wasserstein appears promising for some perturbed contours, but optimization remains sensitive to learning rate and loss-scale balance.
+- RBF deformation is generally more flexible/robust than BSpline in difficult regions, but can overfit without careful regularization.
+- Symmetric bi-Gaussian templates are currently more stable than asymmetric variants.
+- Immediate priority: robustify 2D training protocol (schedules + reproducibility) before scaling to 3D/self-supervised mesh network training.
 Before full 3D training, we will implement a simplified 2D version to validate the loss landscape and gradient flow.
 
 *   **Architecture:**

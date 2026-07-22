@@ -1,9 +1,10 @@
 # Project Status: 2D Optimization Prototype
 
-**Last Updated:** [Current Date]
+**Last Updated:** 2026-07-22
 
 ## Overview
-We have implemented a 2D prototype for refining organelle segmentations using a bi-Gaussian intensity prior. The core logic involves sampling image intensity along vertex normals (using a rectangular average) and optimizing vertex positions to maximize correlation with a template.
+We have implemented a 2D prototype for refining organelle segmentations using a bi-Gaussian intensity prior. The core logic involves sampling image intensity along vertex normals (using a rectangular average) and optimizing vertex positions to maximize alignment with a profile template.
+
 
 ## File Structure
 *   `diffmeshopt/opt2d/generate_2d_data.py`: Generates synthetic data or loads real data slices. Includes trimming logic.
@@ -25,8 +26,25 @@ We have implemented a 2D prototype for refining organelle segmentations using a 
 ## Current State
 - **Core Modules Refactored**:
     - Geometric losses (`LaplacianSmoothingLoss`, `EdgeLengthConsistencyLoss`) have been implemented and moved to `diffmeshopt/opt2d/loss.py`.
-    - The optimization loop has been encapsulated into a `ContourRefiner` class within `diffmeshopt/opt2d/optimize.py`.
-    - The `ContourRefiner` class now correctly uses stochastic sampling for the data term and computes geometric losses on the full contour.
+    - The optimization loop has been encapsulated into a `ContourRefiner` class.
+    - Stochastic data-term sampling is used while geometric losses are computed on full contour.
+- **Data Loss Framework (New)**:
+    - Added `DataLossType` in `opt2d/config.py`:
+        - `BIGAUSSIAN_CORRELATION`
+        - `BIGAUSSIAN_WASSERSTEIN`
+    - Cross-correlation remains baseline; Wasserstein is now selectable for experiments.
+- **Config/API Cleanup (New)**:
+    - Renamed `initial_loss_weights` → `initial_regularization_weights`.
+    - `ContourRefinerProps.profile_width` default updated from `1` to `5` for better SNR in profile averaging.
+- **Platform Robustness (New)**:
+    - `evaluation.py` now uses MPS-safe grid sampling fallback:
+        - `padding_mode="zeros"` + clamped grid on MPS.
+        - `padding_mode="border"` elsewhere.
+- **Data Handling Improvements (New)**:
+    - `generate_2d_data.py` now stores:
+        - `row_start`, `col_start`, `untrimmed_shape`
+    - Enables correct coordinate reconciliation between trimmed and original frames during evaluation.
+
 - **New Refinement Strategies**:
     - **Tangential Smoothing**: Implemented `TangentialSmoothingContourRefiner` and updated losses to support a "Tangential Laplacian" and "Normal Consistency" (Fairing). This decouples smoothing from shrinking, allowing vertices to slide along the surface without collapsing the volume.
     - **RBF Deformation**: Implemented `RBFContourRefiner`, which uses Radial Basis Functions to deform the mesh via sparse control points. This is inherently smooth and 3D-ready.
@@ -73,6 +91,20 @@ We have implemented a 2D prototype for refining organelle segmentations using a 
 - **Tests**: All tests pass, including new convergence tests for all refiner types.
 
 ## Experimental Results & Observations
+- **BSpline Refiner**:
+    - Works but is fragile across seeds/settings on perturbed real slices.
+    - Increasing control points alone (e.g., 60) did not consistently fix fit quality.
+- **RBF Refiner (Correlation)**:
+    - Often more robust than BSpline, but can overfit/noise-follow in flexible regimes.
+- **RBF Refiner (Wasserstein)**:
+    - Promising direction; behavior improved in some runs.
+    - Remaining failure mode: local underfit region (notably lower-left area in current test slice).
+- **Template Models**:
+    - Symmetric bi-Gaussian generally outperforms asymmetric in current setup.
+    - Neural template model showed high variation/instability in current tests.
+- **Optimization Sensitivity**:
+    - Very high LR (e.g., `5e-1`) is unstable for joint contour+template updates.
+    - Shape/data loss balance remains critical; fixed shape weight can dominate early if not scheduled.
 - **BSpline Refiner Shrinking**: The `BSplineContourRefiner` exhibits a tendency to shrink the contour more than the vertex-based refiner.
     - *Update*: This is mitigated by using Tangential Smoothing weights (disabling Laplacian/Edge Length on control points).
 - **Symmetric vs. Asymmetry**: Symmetric template models (`sigma1=sigma2`, `amp1=amp2`) consistently perform better than asymmetric ones.
@@ -87,10 +119,17 @@ We have implemented a 2D prototype for refining organelle segmentations using a 
 - **Template Model Philosophy**: We favor explicit 1D models like `BSplineTemplateModel` for parameterizing template variations. This provides a stronger and more appropriate inductive bias for properties varying along a 1D manifold (the contour) compared to more general but less efficient ambient 2D field models (`NeuralField`, `Grid`).
 
 ## In Progress / Next Steps
-1.  **2D Optimization Validation**: Run `train_2d.ipynb` and `compare_combinations.ipynb` notebooks to verify the full training loop and systematically test various refiner and template combinations on synthetic data.
-2.  **Real Data Validation**: Run `BSplineContourRefiner` with `BSplineTemplateModel` on the real data slice (`data/20289/...`).
-3.  **Visualization**: Use the new visualization tools to inspect the learned template parameters on real data.
-4.  **Port to 3D**: (Paused until 2D is fully robust).
+1. **Stability pass for Wasserstein runs**:
+   - Lower LR baseline sweep.
+   - Add shape-loss warmup schedule.
+   - Evaluate mild contour anchor in early iterations.
+2. **Code hygiene**:
+   - Remove temporary debug-only behavior before release commits.
+   - Keep `debug.py` warnings, but avoid debug overrides in production training path.
+3. **Real-data validation matrix**:
+   - Compare correlation vs Wasserstein under matched seeds/hyperparameters.
+4. **Port to 3D**:
+   - Continue after 2D protocol is stable/reproducible.
 
 ## Limitations
 - **Self-Supervised Learning**: The eventual goal of using this as a self-supervised learning signal for a neural network has not been implemented.
