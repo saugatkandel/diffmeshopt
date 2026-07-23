@@ -7,3 +7,6 @@
 notebooks/dolphin.obj
 **/__pycache__/
 **/*.pyc
+diff_output.log
+pixi.lock
+uv.lock
