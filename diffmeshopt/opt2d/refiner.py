@@ -1,6 +1,7 @@
 import abc
 import copy
 import logging
+from enum import Enum
 from pathlib import Path
 from typing import Any
 
@@ -17,6 +18,7 @@ from diffmeshopt.opt2d.config import (
     RegularizationStrategy,
     RegularizerType,
 )
+from diffmeshopt.opt2d.enums import RefinerType
 from diffmeshopt.opt2d.geometry import (
     compute_normals,
     get_bspline_derivative_matrix,
@@ -26,6 +28,41 @@ from diffmeshopt.opt2d.loss import ContourLoss
 from diffmeshopt.opt2d.regularizer_recipes import resolve_strategy
 from diffmeshopt.opt2d.sampling import sample_profiles_stochastic
 from diffmeshopt.opt2d.template import BaseTemplateModel
+
+
+class RefinerFactory:
+    @staticmethod
+    def create(
+        mode: str | RefinerType,
+        initial_contour: torch.Tensor,
+        props: ContourRefinerProps | BSplineContourRefinerProps | RBFContourRefinerProps,
+        template_model: BaseTemplateModel,
+    ) -> "ContourRefinerBase":
+        if isinstance(mode, str):
+            try:
+                mode = RefinerType(mode.lower())
+            except ValueError as exc:
+                raise ValueError(
+                    f"Unknown refiner mode: {mode}. "
+                    f"Available modes: {[m.value for m in RefinerType]}"
+                ) from exc
+
+        if mode == RefinerType.VERTEX:
+            if not isinstance(props, ContourRefinerProps):
+                raise TypeError("Vertex refiner requires ContourRefinerProps")
+            return ContourRefiner(initial_contour, props, template_model)
+
+        if mode == RefinerType.BSPLINE:
+            if not isinstance(props, BSplineContourRefinerProps):
+                raise TypeError("BSpline refiner requires BSplineContourRefinerProps")
+            return BSplineContourRefiner(initial_contour, props, template_model)
+
+        if mode == RefinerType.RBF:
+            if not isinstance(props, RBFContourRefinerProps):
+                raise TypeError("RBF refiner requires RBFContourRefinerProps")
+            return RBFContourRefiner(initial_contour, props, template_model)
+
+        raise ValueError(f"Unsupported refiner type: {mode}")
 
 
 class ContourRefinerBase(nn.Module, abc.ABC):

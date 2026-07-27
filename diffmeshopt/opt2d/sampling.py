@@ -2,7 +2,7 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 
-import diffmeshopt.opt2d.debug as debug
+import diffmeshopt.opt2d.debug as debug_module
 from diffmeshopt.opt2d.geometry import compute_normals
 
 
@@ -144,9 +144,9 @@ def _get_stratified_indices(
     bin_starts = torch.arange(batch_size, device=device) * step
 
     generator = None
-    if debug.DEBUG:
+    if debug_module.DEBUG:
         # print("Using debug generator for stratified sampling")
-        generator = debug.get_generator(device=device)
+        generator = debug_module.get_generator(device=device)
     jitter = torch.rand(batch_size, device=device, generator=generator) * step
 
     indices = bin_starts + jitter

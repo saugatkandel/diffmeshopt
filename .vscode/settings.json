@@ -77,4 +77,8 @@
     "jupyter.widgetScriptSources": [
         "local"
     ],
+    "ruff.format.preview": true,
+    "ruff.lineLength": null,
+    "notebook.defaultFormatter": "charliermarsh.ruff",
+    "notebook.formatOnSave.enabled": true,
 }

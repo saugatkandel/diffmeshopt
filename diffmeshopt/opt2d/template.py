@@ -7,39 +7,30 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from diffmeshopt.opt2d.config import RegularizerType, TemplateProps
+from diffmeshopt.opt2d.enums import TemplateType
 from diffmeshopt.opt2d.geometry import compute_cubic_bspline_weights, get_bspline_matrix
 from diffmeshopt.opt2d.loss import LaplacianSmoothingLoss
-
-
-class TemplateMode(Enum):
-    PER_POINT = "per_point"
-    GLOBAL = "global"
-    FIXED = "fixed"
-    BSPLINE = "bspline"
-    NEURAL = "neural"
-    GRID = "grid"
-    SPLAT = "splat"
 
 
 class TemplateModelFactory:
     @staticmethod
     def create(
-        mode: str | TemplateMode, props, num_vertices: int = None, image_shape: tuple = None
+        mode: str | TemplateType, props, num_vertices: int = None, image_shape: tuple = None
     ):
         logging.info(f"Creating template model: {mode}")
         # Convert string to Enum if necessary
         if isinstance(mode, str):
             try:
-                mode = TemplateMode(mode.lower())
+                mode = TemplateType(mode.lower())
             except ValueError:
                 raise ValueError(
                     "Unknown template_mode: "
-                    + f"{mode}. Available modes: {[m.value for m in TemplateMode]}"
-                ) from TemplateMode
+                    + f"{mode}. Available modes: {[m.value for m in TemplateType]}"
+                ) from TemplateType
 
         model = None
         # Validation and Instantiation
-        if mode == TemplateMode.PER_POINT:
+        if mode == TemplateType.PER_POINT:
             if num_vertices is None:
                 raise ValueError("num_vertices is required for PER_POINT mode")
             model = PerPointTemplateModel(num_vertices, props)
@@ -49,26 +40,26 @@ class TemplateModelFactory:
         if image_shape is not None and len(image_shape) == 3:
             spatial_dim = 3
 
-        elif mode == TemplateMode.GLOBAL:
+        elif mode == TemplateType.GLOBAL:
             model = GlobalOptimizableTemplateModel(props)
 
-        elif mode == TemplateMode.FIXED:
+        elif mode == TemplateType.FIXED:
             model = FixedTemplateModel(props)
 
-        elif mode == TemplateMode.BSPLINE:
+        elif mode == TemplateType.BSPLINE:
             model = BSplineTemplateModel(props)
 
-        elif mode == TemplateMode.NEURAL:
+        elif mode == TemplateType.NEURAL:
             if image_shape is None:
                 raise ValueError("image_shape (H, W) is required for NEURAL mode")
             model = NeuralFieldTemplateModel(props, image_shape, spatial_dim=spatial_dim)
 
-        elif mode == TemplateMode.GRID:
+        elif mode == TemplateType.GRID:
             if image_shape is None:
                 raise ValueError("image_shape (H, W) is required for GRID mode")
             model = GridTemplateModel(props, image_shape, spatial_dim=spatial_dim)
 
-        elif mode == TemplateMode.SPLAT:
+        elif mode == TemplateType.SPLAT:
             if image_shape is None:
                 raise ValueError("image_shape (H, W) is required for SPLAT mode")
             model = GaussianSplatTemplateModel(props, image_shape, spatial_dim=spatial_dim)
@@ -521,9 +512,10 @@ class BSplineTemplateModel(BaseTemplateModel):
 
         if not props.symmetric:
             self.channel_names.extend(["sigma2", "amp2"])
-            init_vals.extend(
-                [float(props.sigma * props.sigma_ratio), float(props.amp * props.amp_ratio)]
-            )
+            init_vals.extend([
+                float(props.sigma * props.sigma_ratio),
+                float(props.amp * props.amp_ratio),
+            ])
 
         init_tensor = (
             torch.tensor(init_vals, dtype=torch.float32).unsqueeze(1).repeat(1, self.num_cp)

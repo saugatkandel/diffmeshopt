@@ -5,7 +5,8 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from diffmeshopt.opt2d.config import DataLossType, RegularizerType, TemplateProps
+from diffmeshopt.opt2d.config import TemplateProps
+from diffmeshopt.opt2d.enums import DataLossType, RegularizerType
 
 
 class BiGaussianBaseLoss(nn.Module, abc.ABC):
@@ -423,6 +424,7 @@ class ContourLoss(nn.Module):
         laplacian_window_size: int = 3,
         laplacian_mode: str = "full",
         shape_loss_weight: float = 1.0,
+        center_symmetry_weight: float = 0.0,
         initial_regularization_weights: dict[str, float] | None = None,
     ):
 
@@ -468,11 +470,17 @@ class ContourLoss(nn.Module):
         # - Only weights need dynamic registration (to ensure sync with RegularizerType)
         if data_loss_type == DataLossType.BIGAUSSIAN_CORRELATION:
             self.data_loss_fn = BiGaussianCorrelationLoss(
-                template_props=template_props, num_samples=num_samples, sample_step=sample_step
+                template_props=template_props,
+                num_samples=num_samples,
+                sample_step=sample_step,
+                center_symmetry_weight=center_symmetry_weight,
             )
         elif data_loss_type == DataLossType.BIGAUSSIAN_WASSERSTEIN:
             self.data_loss_fn = BiGaussianWassersteinLoss(
-                template_props=template_props, num_samples=num_samples, sample_step=sample_step
+                template_props=template_props,
+                num_samples=num_samples,
+                sample_step=sample_step,
+                center_symmetry_weight=center_symmetry_weight,
             )
         else:
             raise ValueError(f"Unsupported data loss type: {data_loss_type}")

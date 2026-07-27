@@ -38,7 +38,7 @@ from diffmeshopt.opt2d.refiner import (
     ContourRefiner,
     RBFContourRefiner,
 )
-from diffmeshopt.opt2d.template import TemplateMode, TemplateModelFactory
+from diffmeshopt.opt2d.template import TemplateModelFactory, TemplateType
 from diffmeshopt.opt2d.trainer import OptimizationTrainer, TrainerConfig
 
 # Configure logging

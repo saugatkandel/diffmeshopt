@@ -1,6 +1,7 @@
 # debug.py
 import logging
 from contextlib import contextmanager
+from datetime import datetime
 
 import torch
 
@@ -32,3 +33,12 @@ def debug_warning(context_message: str):
     finally:
         # Everything after 'yield' runs when exiting the block (even if an error happens)
         pass
+
+
+def make_run_id(short_name: str, use_date_only=False) -> str:
+    timestamp = (
+        datetime.now().strftime("%Y%m%d")
+        if use_date_only
+        else datetime.now().strftime("%Y%m%d-%H%M")
+    )
+    return f"{timestamp}_{short_name}"

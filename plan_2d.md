@@ -33,6 +33,12 @@ This document outlines the strategy for implementing and testing the differentia
     *   **Stochastic Sampling**: Evaluates data loss on a random subset of vertices per step for efficiency. Uses full-resolution normals to maintain geometric accuracy.
     *   Samples profiles using `grid_sample`.
     *   **Masking**: Ignores profiles that cross image boundaries.
+    *   **Profile Width**: Rectangular averaging across the tangent direction to increase SNR before template matching.
+        *   Default changed from `1` px → `5` px.
+        *   No prior documentation justified the original `1` px default; it is assumed to have been an untuned placeholder from early synthetic-data bring-up, where noise levels were low enough that tangential averaging wasn't necessary.
+        *   `5` px empirically improves stability on lower-SNR real slices, at the cost of some blurring on high-curvature contour segments.
+        *   Open item: consider adaptive width (narrower in high-curvature regions) if blurring becomes problematic.
+
 3.  **Template Model**:
     *   Predicts template parameters $\theta_i = (\sigma_i, d_i, A_i)$ for each point.
     *   **Models**: Fixed, Global, Per-Point, B-Spline (1D along contour), Neural Field (MLP on $x,y$), Grid (2D learnable map), Gaussian Splat (RBFs).

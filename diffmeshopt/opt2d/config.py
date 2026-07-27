@@ -1,48 +1,38 @@
+from copy import deepcopy
 from dataclasses import dataclass, field
 from enum import Enum
 
-
-class DataLossType(Enum):
-    BIGAUSSIAN_CORRELATION = "bigaussian_correlation"
-    BIGAUSSIAN_WASSERSTEIN = "bigaussian_wasserstein"
+from diffmeshopt.opt2d.enums import DataLossType, RefinerType, RegularizerType
 
 
-class RegularizerType(Enum):
-    """Central registry of all regularizer loss types in the system.
+class ReplaceableMixin:
+    def replace(self, **changes):
+        """Return a new instance with updated fields.
 
-    Single source of truth for loss names - prevents typos and enables
-    IDE autocomplete, type safety, and refactoring support.
+        This method creates a new instance of the dataclass with the specified
+        changes applied. It does not modify the original instance.
 
-    Naming convention: <domain>_<operator>
-    - Contour regularizers: operate on contour geometry (positions, normals)
-    - Template regularizers: operate on template parameters (sigma, peak_dist, etc.)
+        Args:
+            **changes: Field names and their new values to update.
 
-    Note: DATA loss is not included here as it always has weight=1.0
-    and is never adaptive. It serves as the reference for all regularizers.
-    """
+        Returns:
+            A new instance of the dataclass with the specified changes.
 
-    # Contour geometry regularizers
-    CONTOUR_LAPLACIAN = "contour_laplacian"  # Laplacian smoothing on positions
-    EDGE_LENGTH = "edge_length"  # Edge length uniformity
-    TANGENTIAL_LAPLACIAN = "tangential_laplacian"  # Tangential Laplacian for point spacing
-    NORMAL_CONSISTENCY = "normal_consistency"  # Normal/curvature smoothness (fairing)
-    CONTOUR_ANCHOR = "contour_anchor"  # Anchor to initialization (L2 distance)
-
-    # Template parameter regularizers
-    # Anchors (L2 proximity to initialization)
-    ANCHOR_SIGMA = "anchor_sigma"
-    ANCHOR_PEAK_DIST = "anchor_peak_dist"
-    ANCHOR_SIGMA_RATIO = "anchor_sigma_ratio"
-    ANCHOR_AMP_RATIO = "anchor_amp_ratio"
-
-    # Smoothness (Laplacian/Spatial)
-    SMOOTH_SIGMA = "smooth_sigma"
-    SMOOTH_PEAK_DIST = "smooth_peak_dist"
-    SMOOTH_SIGMA_RATIO = "smooth_sigma_ratio"
-    SMOOTH_AMP_RATIO = "smooth_amp_ratio"
-
-    # Refiner parameter regularizers
-    RBF_WEIGHT_DECAY = "rbf_weight_decay"  # Penalize RBF weight magnitude
+        Caveats:
+            - It is a bit less general than dataclasses.replace() because it assumes
+             the class is a dataclass and uses __dict__.
+            - It assumes dataclass fields are all accessible via __dict__,
+             which is true for standard dataclasses but may not hold for all
+             custom implementations.
+            - If I want to use slots=True or init=False, or other advanced dataclass features,
+             this method may need to be updated to handle those cases.
+        """
+        # Create a copy of the current instance's __dict__
+        current_fields = deepcopy(self.__dict__)
+        # Update the fields with the provided changes
+        current_fields.update(changes)
+        # Create a new instance of the same class with updated fields
+        return self.__class__(**current_fields)
 
 
 class RegularizationStrategy(Enum):
@@ -54,16 +44,16 @@ class RegularizationStrategy(Enum):
     MINIMAL = "minimal"  # Data-driven, minimal constraints
 
 
-@dataclass
-class RegularizerConfig:
+@dataclass(frozen=True)
+class RegularizerConfig(ReplaceableMixin):
     """Configuration for a single regularizer - single source of truth."""
 
     static_weight: float  # Default weight for static (non-adaptive) mode
     target_ratio: float  # Target ratio for adaptive mode (relative to data loss)
 
 
-@dataclass
-class RegularizerDefaults:
+@dataclass(frozen=True)
+class RegularizerDefaults(ReplaceableMixin):
     """Single source of truth for all regularizers in the codebase.
 
     To add/remove a regularizer:
@@ -169,8 +159,8 @@ class RegularizerDefaults:
             )
 
 
-@dataclass
-class AdaptiveRegularizationProps:
+@dataclass(frozen=True)
+class AdaptiveRegularizationProps(ReplaceableMixin):
     """Configuration for adaptive regularization weight adjustment.
 
     Note: Target ratios are defined in RegularizerDefaults (single source of truth).
@@ -193,8 +183,8 @@ class AdaptiveRegularizationProps:
     max_weight: float = 100.0
 
 
-@dataclass
-class ContourRefinerProps:
+@dataclass(frozen=True)
+class ContourRefinerProps(ReplaceableMixin):
     """Properties for the ContourRefiner.
 
     Regularization weights can be overridden via initial_regularization_weights dict.
@@ -224,6 +214,7 @@ class ContourRefinerProps:
         _reg_defaults (RegularizerDefaults): Internal registry of default weights.
     """
 
+    refiner_type: RefinerType = RefinerType.VERTEX
     num_steps: int = 100
     learning_rate: float = 0.1
     data_loss_type: DataLossType = DataLossType.BIGAUSSIAN_CORRELATION
@@ -240,6 +231,8 @@ class ContourRefinerProps:
     # Geometry
     laplacian_window_size: int = 3
     shape_loss_weight: float = 1.0
+    # Penalty for asymmetric profiles
+    center_symmetry_weight: float = 0.0
     # Adaptive regularization (optional)
     adaptive_reg: AdaptiveRegularizationProps | None = None
     regularization_strategy: RegularizationStrategy = RegularizationStrategy.TANGENTIAL_SMOOTHING
@@ -311,23 +304,25 @@ class ContourRefinerProps:
         return 0.1  # Fallback default
 
 
-@dataclass
+@dataclass(frozen=True)
 class BSplineContourRefinerProps(ContourRefinerProps):
     """Properties for the BSplineContourRefiner."""
 
+    refiner_type: RefinerType = RefinerType.BSPLINE
     contour_num_control_points: int = 64
 
 
-@dataclass
+@dataclass(frozen=True)
 class RBFContourRefinerProps(ContourRefinerProps):
     """Properties for the RBFContourRefiner."""
 
+    refiner_type: RefinerType = RefinerType.RBF
     rbf_num_control_points: int = 32
     rbf_kernel_sigma: float = 0.0  # If <= 0.0, auto-calculated from control point spacing
 
 
-@dataclass
-class TemplateProps:
+@dataclass(frozen=True)
+class TemplateProps(ReplaceableMixin):
     """Configuration for template (bi-Gaussian intensity profile) models.
 
     Template parameters define the characteristic double-peak intensity profile.
@@ -373,33 +368,33 @@ class TemplateProps:
         return self.__class__(**{**self.__dict__, **update})
 
 
-@dataclass
+@dataclass(frozen=True)
 class BSplineTemplateProps(TemplateProps):
     # BSpline Template specific
     bspline_num_control_points: int = 10
 
 
-@dataclass
+@dataclass(frozen=True)
 class NeuralFieldTemplateProps(TemplateProps):
     # Neural Field Template specific
     neural_hidden_dim: int = 32
     neural_num_layers: int = 2
 
 
-@dataclass
+@dataclass(frozen=True)
 class GridTemplateProps(TemplateProps):
     # Grid Template specific
     grid_size: int = 32
 
 
-@dataclass
+@dataclass(frozen=True)
 class GaussianSplatTemplateProps(TemplateProps):
     # Gaussian Splat Template specific
     splat_num_splats: int = 32
 
 
-@dataclass
-class TrainerProps:
+@dataclass(frozen=True)
+class TrainerProps(ReplaceableMixin):
     """Properties for the OptimizationTrainer."""
 
     output_dir: str = "output"

@@ -36,6 +36,13 @@ We have implemented a 2D prototype for refining organelle segmentations using a 
 - **Config/API Cleanup (New)**:
     - Renamed `initial_loss_weights` → `initial_regularization_weights`.
     - `ContourRefinerProps.profile_width` default updated from `1` to `5` for better SNR in profile averaging.
+        - **Open Question**: The original default of `profile_width=1` (i.e., no tangential averaging) is not clearly justified in earlier design notes.
+          Possible historical reasons:
+          1. **Simplicity during initial bring-up**: A width of 1 avoids any ambiguity about how averaging interacts with normal direction, curvature, or boundary masking — useful when first validating differentiable sampling.
+          2. **Avoiding tangential blur across curved regions**: Averaging perpendicular-to-normal strips assumes the membrane is locally straight; on high-curvature contour segments, a wide strip can blend intensities from different physical membrane locations, biasing the profile.
+          3. **Untuned placeholder**: It's also plausible this was simply a default that was never revisited after synthetic-data testing (where noise levels were low enough that averaging wasn't necessary).
+        - **Why `5` works better in practice**: Real cryo-ET slices have lower SNR than synthetic test data. Averaging across a small tangential window (5 px) reduces per-pixel noise in the sampled profile before cross-correlation/Wasserstein matching, at the cost of some localized blurring on curved regions. Empirically this trade-off has improved fit stability.
+        - **Action Item**: If curvature-induced blurring becomes an issue, consider an adaptive width (e.g., shrinking width in high-curvature regions) rather than a single global constant.
 - **Platform Robustness (New)**:
     - `evaluation.py` now uses MPS-safe grid sampling fallback:
         - `padding_mode="zeros"` + clamped grid on MPS.
