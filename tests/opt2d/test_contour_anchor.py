@@ -7,7 +7,7 @@ from diffmeshopt.opt2d.config import (
     RegularizerType,
     TemplateProps,
 )
-from diffmeshopt.opt2d.refiner import BSplineContourRefiner, ContourRefiner
+from diffmeshopt.opt2d.refiner import BSplineContourRefiner, VertexContourRefiner
 from diffmeshopt.opt2d.template import FixedTemplateModel
 
 
@@ -20,7 +20,7 @@ def test_contour_anchor_loss_vertex():
     props.initial_loss_weights = {RegularizerType.CONTOUR_ANCHOR.value: 0.5}
 
     template = FixedTemplateModel(TemplateProps())
-    refiner = ContourRefiner(initial_contour, props, template)
+    refiner = VertexContourRefiner(initial_contour, props, template)
 
     # 1. Verify initial loss is 0 (starts at anchor)
     losses = refiner.get_regularization_loss()
@@ -53,7 +53,7 @@ def test_contour_anchor_loss_bspline():
     # Setup: Simple square
     initial_contour = torch.tensor([[0.0, 0.0], [0.0, 1.0], [1.0, 1.0], [1.0, 0.0]])
     # 4 control points for 4 vertices allows exact fit
-    props = BSplineContourRefinerProps(contour_num_control_points=4)
+    props = BSplineContourRefinerProps(num_control_points=4)
     props.initial_loss_weights = {RegularizerType.CONTOUR_ANCHOR.value: 2.0}
 
     template = FixedTemplateModel(TemplateProps())

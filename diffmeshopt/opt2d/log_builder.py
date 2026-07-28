@@ -212,7 +212,7 @@ class ExperimentLogEntry:
             ("Data loss type", self.config.get("data_loss_type", "")),
             ("Learning rate", self.config.get("learning_rate", "")),
             ("Num cp", self.config.get("num_cp", "")),
-            ("RBF sigma", self.config.get("rbf_sigma", "")),
+            ("RBF sigma", self.config.get("kernel_sigma", "")),
             ("Profile length", self.config.get("profile_length", "")),
             ("Profile width", self.config.get("profile_width", "")),
             ("Shape loss weight", self.config.get("shape_loss_weight", "")),
@@ -326,6 +326,9 @@ def create_experiment_log_entry_from_trainer(
     device: str | None = None,
     seeds: str = "145",
     status: str = "complete",
+    visual_checks: dict[str, Any] | None = None,
+    interpretation: list[str] | None = None,
+    next_action: list[str] | None = None,
     frame_mapping_metadata: dict[str, Any] | None = None,
 ) -> "ExperimentLogEntry":
     refiner = getattr(trainer, "refiner", None)
@@ -349,19 +352,19 @@ def create_experiment_log_entry_from_trainer(
 
     config: dict[str, Any] = {}
     if props is not None:
-        config["refiner"] = _enum_or_value(getattr(refiner, "refiner_kind", None) or "")
+        config["refiner"] = _enum_or_value(getattr(refiner, "REFINER_TYPE", None) or "")
         config["learning_rate"] = getattr(props, "learning_rate", None)
         config["shape_loss_weight"] = getattr(props, "shape_loss_weight", None)
-        config["num_cp"] = getattr(props, "rbf_num_control_points", None) or getattr(
+        config["num_cp"] = getattr(props, "num_control_points", None) or getattr(
             props, "contour_num_control_points", None
         )
-        config["rbf_sigma"] = getattr(props, "rbf_kernel_sigma", None)
+        config["rbf_sigma"] = getattr(props, "kernel_sigma", None)
         config["profile_length"] = getattr(props, "profile_length", None)
         config["profile_width"] = getattr(props, "profile_width", None)
         config["data_loss_type"] = _enum_or_value(getattr(props, "data_loss_type", None))
 
     if template_props is not None:
-        config["template"] = _enum_or_value(getattr(template_model, "template_kind", None) or "")
+        config["template"] = _enum_or_value(getattr(template_model, "TEMPLATE_TYPE", None) or "")
         config["min_peak_ratio"] = getattr(template_props, "min_peak_ratio", None)
 
     quantitative_results: dict[str, Any] = {}
@@ -405,7 +408,8 @@ def create_experiment_log_entry_from_trainer(
         runtime_notes=runtime_notes,
         quantitative_results=quantitative_results,
         template_diagnostics=template_diagnostics or {},
-        interpretation=[],
-        next_action=[],
+        visual_checks=visual_checks or {},
+        interpretation=interpretation or [],
+        next_action=next_action or [],
         artifacts=artifacts,
     )

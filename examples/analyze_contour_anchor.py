@@ -58,7 +58,7 @@ from diffmeshopt.opt2d.config import (
     RegularizerType,
     TemplateProps,
 )
-from diffmeshopt.opt2d.refiner import BSplineContourRefiner, ContourRefiner
+from diffmeshopt.opt2d.refiner import BSplineContourRefiner, VertexContourRefiner
 from diffmeshopt.opt2d.regularizer_recipes import (
     TANGENTIAL_SMOOTHING_BSPLINE,
     TANGENTIAL_SMOOTHING_VERTEX,
@@ -111,7 +111,7 @@ def analyze_vertex_anchor():
             num_sampled_profiles=num_vertices,  # Sample all vertices for accurate analysis
             initial_loss_weights=loss_weights,
         )
-        refiner = ContourRefiner(initial_contour.clone(), props, template)
+        refiner = VertexContourRefiner(initial_contour.clone(), props, template)
 
         final_losses = {}
         for _ in tqdm(range(100), desc=f"w={w}", leave=False):
@@ -122,14 +122,12 @@ def analyze_vertex_anchor():
         final_radius = torch.norm(final_contour - center, dim=1).mean().item()
         displacement = final_radius - init_radius
 
-        results.append(
-            {
-                "weight": w,
-                "displacement": displacement,
-                "contour": final_contour.numpy(),
-                "losses": final_losses,
-            }
-        )
+        results.append({
+            "weight": w,
+            "displacement": displacement,
+            "contour": final_contour.numpy(),
+            "losses": final_losses,
+        })
 
     # --- Run Adaptive Case for Comparison ---
     print("Running Adaptive analysis...")
@@ -145,7 +143,7 @@ def analyze_vertex_anchor():
         initial_loss_weights=loss_weights_adaptive,
         adaptive_reg=AdaptiveRegularizationProps(enabled=True, update_interval=5, warmup_steps=10),
     )
-    refiner_adaptive = ContourRefiner(initial_contour.clone(), props_adaptive, template)
+    refiner_adaptive = VertexContourRefiner(initial_contour.clone(), props_adaptive, template)
     final_losses_adaptive = {}
     for _ in range(100):
         final_losses_adaptive = refiner_adaptive.step(image)
@@ -339,7 +337,7 @@ def analyze_bspline_anchor():
             learning_rate=0.5,
             profile_length=21,
             num_sampled_profiles=len(initial_contour),
-            contour_num_control_points=16,  # Sparse control points
+            num_control_points=16,  # Sparse control points
             initial_loss_weights=loss_weights,
         )
         refiner = BSplineContourRefiner(initial_contour.clone(), props, template)
@@ -359,16 +357,14 @@ def analyze_bspline_anchor():
         # Mean Euclidean distance of CPs from their start
         cp_disp = torch.norm(final_cp - init_cp, dim=1).mean().item()
 
-        results.append(
-            {
-                "weight": w,
-                "contour_disp": contour_disp,
-                "cp_disp": cp_disp,
-                "contour": final_contour.numpy(),
-                "control_points": final_cp.numpy(),
-                "losses": final_losses,
-            }
-        )
+        results.append({
+            "weight": w,
+            "contour_disp": contour_disp,
+            "cp_disp": cp_disp,
+            "contour": final_contour.numpy(),
+            "control_points": final_cp.numpy(),
+            "losses": final_losses,
+        })
 
     # --- Run Adaptive Case for Comparison ---
     print("Running Adaptive B-Spline analysis...")
@@ -380,7 +376,7 @@ def analyze_bspline_anchor():
         learning_rate=0.5,
         profile_length=21,
         num_sampled_profiles=len(initial_contour),
-        contour_num_control_points=16,
+        num_control_points=16,
         initial_loss_weights=loss_weights_adaptive,
         adaptive_reg=AdaptiveRegularizationProps(enabled=True, update_interval=5, warmup_steps=10),
     )

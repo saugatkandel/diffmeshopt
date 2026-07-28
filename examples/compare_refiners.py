@@ -32,8 +32,8 @@ from diffmeshopt.opt2d.evaluation import compute_contour_metrics
 from diffmeshopt.opt2d.generate_2d_data import generate_synthetic_data
 from diffmeshopt.opt2d.refiner import (
     BSplineContourRefiner,
-    ContourRefiner,
     RBFContourRefiner,
+    VertexContourRefiner,
 )
 from diffmeshopt.opt2d.template import TemplateModelFactory
 
@@ -81,7 +81,7 @@ def compare_refiners_on_synthetic():
         profile_length=21,
         regularization_strategy=RegularizationStrategy.TANGENTIAL_SMOOTHING,
     )
-    refiner_vertex = ContourRefiner(initial_contour.clone(), props_vertex, template)
+    refiner_vertex = VertexContourRefiner(initial_contour.clone(), props_vertex, template)
 
     # 2. B-Spline Refiner
     props_bspline = BSplineContourRefinerProps(
@@ -89,7 +89,7 @@ def compare_refiners_on_synthetic():
         learning_rate=0.5,
         profile_length=21,
         regularization_strategy=RegularizationStrategy.TANGENTIAL_SMOOTHING,
-        contour_num_control_points=32,
+        num_control_points=32,
     )
     refiner_bspline = BSplineContourRefiner(initial_contour.clone(), props_bspline, template)
 
@@ -99,8 +99,8 @@ def compare_refiners_on_synthetic():
         learning_rate=0.5,
         profile_length=21,
         regularization_strategy=RegularizationStrategy.TANGENTIAL_SMOOTHING,
-        rbf_num_control_points=20,
-        rbf_kernel_sigma=0.0,  # Auto
+        num_control_points=20,
+        kernel_sigma=0.0,  # Auto
     )
     refiner_rbf = RBFContourRefiner(initial_contour.clone(), props_rbf, template)
 
@@ -117,14 +117,12 @@ def compare_refiners_on_synthetic():
         final = refiner.contour
         metrics = compute_contour_metrics(final, gt_contour)
 
-        results.append(
-            {
-                "name": name,
-                "contour": final.detach().cpu().numpy(),
-                "loss_history": loss_history,
-                "chamfer": metrics["mean_dist"],
-            }
-        )
+        results.append({
+            "name": name,
+            "contour": final.detach().cpu().numpy(),
+            "loss_history": loss_history,
+            "chamfer": metrics["mean_dist"],
+        })
 
     # --- Visualization ---
     fig = plt.figure(figsize=(16, 10))

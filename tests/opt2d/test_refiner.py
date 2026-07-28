@@ -15,9 +15,9 @@ from diffmeshopt.opt2d.config import (
 )
 from diffmeshopt.opt2d.refiner import (
     BSplineContourRefiner,
-    ContourRefiner,
     RBFContourRefiner,
     TangentialSmoothingContourRefiner,
+    VertexContourRefiner,
 )
 from diffmeshopt.opt2d.template import TemplateModelFactory
 
@@ -25,7 +25,7 @@ from diffmeshopt.opt2d.template import TemplateModelFactory
 @pytest.mark.parametrize(
     "refiner_class",
     [
-        ContourRefiner,
+        VertexContourRefiner,
         BSplineContourRefiner,
         TangentialSmoothingContourRefiner,
         RBFContourRefiner,
@@ -46,7 +46,7 @@ def test_refiner_template_combinations(
     num_points = len(initial_contour)
     img_size = image.shape[-1]
     # 1. Set up properties for the refiner
-    if refiner_class in (ContourRefiner, TangentialSmoothingContourRefiner):
+    if refiner_class in (VertexContourRefiner, TangentialSmoothingContourRefiner):
         props = ContourRefinerProps(
             num_steps=5,
             learning_rate=0.1,
@@ -65,15 +65,15 @@ def test_refiner_template_combinations(
                 RegularizerType.CONTOUR_LAPLACIAN.value: 0.1,
                 RegularizerType.EDGE_LENGTH.value: 0.1,
             },
-            contour_num_control_points=16,
+            num_control_points=16,
         )
     elif refiner_class is RBFContourRefiner:
         props = RBFContourRefinerProps(
             num_steps=5,
             learning_rate=0.1,
             initial_loss_weights={"data": 1.0},
-            rbf_num_control_points=8,
-            rbf_kernel_sigma=10.0,
+            num_control_points=8,
+            kernel_sigma=10.0,
         )
     else:
         pytest.fail(f"Unknown refiner class: {refiner_class}")
@@ -83,11 +83,9 @@ def test_refiner_template_combinations(
         symmetric=template_is_symmetric,
     )
     if "bspline" in template_name:
-        template_props = BSplineTemplateProps(
-            **template_props.__dict__, bspline_num_control_points=8
-        )
+        template_props = BSplineTemplateProps(**template_props.__dict__, num_control_points=8)
     elif "neural" in template_name:
-        template_props = NeuralFieldTemplateProps(**template_props.__dict__, neural_hidden_dim=16)
+        template_props = NeuralFieldTemplateProps(**template_props.__dict__, hidden_dim=16)
         # Neural fields can be sensitive to high learning rates in short tests
         if hasattr(props, "learning_rate"):
             props.learning_rate = 0.01
@@ -146,7 +144,7 @@ def test_tangential_smoothing_no_shrinking():
     )
     template_model = TemplateModelFactory.create("fixed", props=TemplateProps())
 
-    refiner_std = ContourRefiner(initial_contour.clone(), props_std, template_model)
+    refiner_std = VertexContourRefiner(initial_contour.clone(), props_std, template_model)
     list(refiner_std.refine(image))  # Run
 
     final_radius_std = torch.norm(refiner_std.contour, dim=1).mean().item()
@@ -188,8 +186,8 @@ def test_rbf_refiner_movement():
 
     # Use only 2 control points (start and end)
     props = RBFContourRefinerProps(
-        rbf_num_control_points=2,
-        rbf_kernel_sigma=50.0,  # Large sigma to influence everything
+        num_control_points=2,
+        kernel_sigma=50.0,  # Large sigma to influence everything
         learning_rate=1.0,
     )
     template_model = TemplateModelFactory.create("fixed", props=TemplateProps())
@@ -233,7 +231,7 @@ def test_adaptive_regularization_updates():
     )
 
     template_model = TemplateModelFactory.create("fixed", props=TemplateProps())
-    refiner = ContourRefiner(initial_contour, props, template_model)
+    refiner = VertexContourRefiner(initial_contour, props, template_model)
 
     # Initial weight
     initial_w = refiner.loss_fn.get_weight(RegularizerType.CONTOUR_LAPLACIAN).item()

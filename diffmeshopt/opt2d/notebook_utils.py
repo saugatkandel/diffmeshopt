@@ -36,8 +36,8 @@ DEFAULT_RBF_REFINER_PROPS = RBFContourRefinerProps(
         "contour_anchor": 0.0,
         "rbf_weight_decay": 0.001,
     },
-    rbf_num_control_points=40,
-    rbf_kernel_sigma=0.0,
+    num_control_points=40,
+    kernel_sigma=0.0,
 )
 
 DEFAULT_TEMPLATE_PROPS = TemplateProps(
@@ -118,13 +118,7 @@ def create_trainer_from_manual_config(
 
     trainer = OptimizationTrainer(refiner, trainer_config)
 
-    return (
-        trainer,
-        run_dir,
-        image_t,
-        contour_t,
-        gt_contour_t,
-    )
+    return (trainer, run_id, run_dir, image_t, contour_t, gt_contour_t, template_model, seed)
 
 
 def analyze_trainer_results(
@@ -151,6 +145,15 @@ def analyze_trainer_results(
     mean_peak_dist = template_params["peak_dist"].detach().numpy().mean()
     mean_sigma1 = template_params["sigma1"].detach().numpy().mean()
     mean_sigma2 = template_params["sigma2"].detach().numpy().mean()
+
+    template_diagnostics = {
+        "peak_dist_mean": mean_peak_dist,
+        "sigma1_mean": mean_sigma1,
+        "sigma2_mean": mean_sigma2,
+        "peak_dist_std": template_params["peak_dist"].detach().numpy().std(),
+        "sigma1_std": template_params["sigma1"].detach().numpy().std(),
+        "sigma2_std": template_params["sigma2"].detach().numpy().std(),
+    }
 
     print(
         f"Mean Peak Dist: {mean_peak_dist:.2f}, Mean Sigma1: {mean_sigma1:.2f}, Mean Sigma2: {mean_sigma2:.2f}"
@@ -180,3 +183,5 @@ def analyze_trainer_results(
     trainer.refiner.visualize_contour(image_t.detach())
     vis.plot_contour_normals(image_t, tmp_coords.detach().numpy())
     plt.show()
+
+    return metrics_from_init, template_diagnostics

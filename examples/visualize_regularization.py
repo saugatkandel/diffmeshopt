@@ -32,8 +32,8 @@ from diffmeshopt.opt2d.config import (
 )
 from diffmeshopt.opt2d.refiner import (
     BSplineContourRefiner,
-    ContourRefiner,
     RBFContourRefiner,
+    VertexContourRefiner,
 )
 from diffmeshopt.opt2d.regularizer_recipes import (
     TANGENTIAL_SMOOTHING_RBF,
@@ -72,7 +72,7 @@ def visualize_vertex_shrinking():
             RegularizerType.CONTOUR_ANCHOR.value: 0.0,
         },
     )
-    refiner_shrink = ContourRefiner(initial_contour.clone(), props_shrink, template)
+    refiner_shrink = VertexContourRefiner(initial_contour.clone(), props_shrink, template)
     final_shrink = run_optimization(refiner_shrink, image)
 
     # Case 2: Tangential Smoothing (Preserves Volume)
@@ -85,7 +85,7 @@ def visualize_vertex_shrinking():
         profile_length=21,
         initial_loss_weights=loss_weights_tan,
     )
-    refiner_tan = ContourRefiner(initial_contour.clone(), props_tan, template)
+    refiner_tan = VertexContourRefiner(initial_contour.clone(), props_tan, template)
     final_tan = run_optimization(refiner_tan, image)
 
     # Plot
@@ -138,7 +138,7 @@ def visualize_bspline_corner_cutting():
 
     # Case 1: Contour Laplacian on Control Points (Corner Cutting)
     props_bad = BSplineContourRefinerProps(
-        contour_num_control_points=16,
+        num_control_points=16,
         learning_rate=0.5,
         profile_length=21,
         initial_loss_weights={
@@ -191,11 +191,11 @@ def visualize_rbf_weight_decay():
         loss_weights[RegularizerType.RBF_WEIGHT_DECAY.value] = w
 
         props = RBFContourRefinerProps(
-            rbf_num_control_points=5,
+            num_control_points=5,
             learning_rate=0.5,
             profile_length=21,
             initial_loss_weights=loss_weights,
-            rbf_kernel_sigma=20.0,
+            kernel_sigma=20.0,
         )
         refiner = RBFContourRefiner(initial_contour.clone(), props, template)
         # Manually pull weights to simulate data force if we don't run full optim

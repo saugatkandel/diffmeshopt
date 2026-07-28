@@ -33,36 +33,36 @@ from diffmeshopt.opt2d.template import BaseTemplateModel
 class RefinerFactory:
     @staticmethod
     def create(
-        mode: str | RefinerType,
+        refiner_type: str | RefinerType,
         initial_contour: torch.Tensor,
         props: ContourRefinerProps | BSplineContourRefinerProps | RBFContourRefinerProps,
         template_model: BaseTemplateModel,
     ) -> "ContourRefinerBase":
-        if isinstance(mode, str):
+        if isinstance(refiner_type, str):
             try:
-                mode = RefinerType(mode.lower())
+                refiner_type = RefinerType(refiner_type.lower())
             except ValueError as exc:
                 raise ValueError(
-                    f"Unknown refiner mode: {mode}. "
+                    f"Unknown refiner mode: {refiner_type}. "
                     f"Available modes: {[m.value for m in RefinerType]}"
                 ) from exc
 
-        if mode == RefinerType.VERTEX:
+        if refiner_type == RefinerType.VERTEX:
             if not isinstance(props, ContourRefinerProps):
                 raise TypeError("Vertex refiner requires ContourRefinerProps")
-            return ContourRefiner(initial_contour, props, template_model)
+            return VertexContourRefiner(initial_contour, props, template_model)
 
-        if mode == RefinerType.BSPLINE:
+        if refiner_type == RefinerType.BSPLINE:
             if not isinstance(props, BSplineContourRefinerProps):
                 raise TypeError("BSpline refiner requires BSplineContourRefinerProps")
             return BSplineContourRefiner(initial_contour, props, template_model)
 
-        if mode == RefinerType.RBF:
+        if refiner_type == RefinerType.RBF:
             if not isinstance(props, RBFContourRefinerProps):
                 raise TypeError("RBF refiner requires RBFContourRefinerProps")
             return RBFContourRefiner(initial_contour, props, template_model)
 
-        raise ValueError(f"Unsupported refiner type: {mode}")
+        raise ValueError(f"Unsupported refiner type: {refiner_type}")
 
 
 class ContourRefinerBase(nn.Module, abc.ABC):
@@ -93,6 +93,8 @@ class ContourRefinerBase(nn.Module, abc.ABC):
         The image is passed to `step()` and `forward_pass()` rather than stored.
         This enables video tracking (reusing refiner across frames) and clean serialization.
     """
+
+    REFINER_TYPE: RefinerType | None = None
 
     def __init__(
         self,
@@ -196,6 +198,22 @@ class ContourRefinerBase(nn.Module, abc.ABC):
         """Returns refiner-specific regularization losses (e.g. RBF weight decay)."""
         return {}
 
+    def _cyclic_pad_points(self, points: torch.Tensor) -> torch.Tensor:
+        """
+        Pads points as [...tail_k, points, head_k] for closed contours.
+        Used for local/indexed regularization terms to remove seam artifacts.
+        """
+        if not self.props.closed_contour:
+            return points
+
+        k = max(0, int(self.props.cyclic_pad_width))
+        n = int(points.shape[0])
+        if k == 0 or n < 2:
+            return points
+
+        k = min(k, n - 1)
+        return torch.cat([points[-k:], points, points[:k]], dim=0)
+
     def compute_losses(
         self,
         image: torch.Tensor,
@@ -228,9 +246,11 @@ class ContourRefinerBase(nn.Module, abc.ABC):
         # Check if explicit edges are defined (e.g. for 3D meshes)
         edges = getattr(self, "edges", None)
 
+        reg_points = self._cyclic_pad_points(self.points_for_regularization)
+
         losses = self.loss_fn(
             profiles,
-            self.points_for_regularization,
+            reg_points,
             vertices=self.contour,
             normals=self.normals,
             edges=edges,
@@ -362,10 +382,16 @@ class ContourRefinerBase(nn.Module, abc.ABC):
                 k: v.detach().cpu().numpy() if isinstance(v, torch.Tensor) else v
                 for k, v in params_torch.items()
             }
+
+            # Prefer explicit template_type; keep "mode" key for backward compatibility.
+            template_type = getattr(self.template_model, "TEMPLATE_TYPE", None)
+            template_value = template_type.value if template_type is not None else "unknown"
+
             return {
                 "contour": contour_np,
                 "template_params": params_np,
-                "mode": self.template_model.mode.value if self.template_model.mode else "unknown",
+                "template_type": template_value,
+                "refiner_type": self.REFINER_TYPE.value,
             }
 
     def capture_initial_state(self):
@@ -561,8 +587,10 @@ class ContourRefinerBase(nn.Module, abc.ABC):
         self.template_model.set_topology(edges)
 
 
-class ContourRefiner(ContourRefinerBase):
+class VertexContourRefiner(ContourRefinerBase):
     """Refines a 2D contour by optimizing its vertex positions directly."""
+
+    REFINER_TYPE: RefinerType = RefinerType.VERTEX
 
     def __init__(
         self,
@@ -575,6 +603,7 @@ class ContourRefiner(ContourRefinerBase):
 
         self.contour_param = nn.Parameter(initial_contour.clone())
         self.register_buffer("initial_contour", initial_contour.clone())
+        self._set_template_topology(num_points=len(initial_contour), device=initial_contour.device)
         self.capture_initial_state()
 
     @property
@@ -597,6 +626,8 @@ class ContourRefiner(ContourRefinerBase):
 class BSplineContourRefiner(ContourRefinerBase):
     """Refines a 2D contour by optimizing B-spline control points."""
 
+    REFINER_TYPE: RefinerType = RefinerType.BSPLINE
+
     def __init__(
         self,
         initial_contour: torch.Tensor,
@@ -605,7 +636,7 @@ class BSplineContourRefiner(ContourRefinerBase):
     ):
 
         super().__init__(props, template_model)
-        num_control_points = props.contour_num_control_points
+        num_control_points = props.num_control_points
         num_eval_points = len(initial_contour)
 
         logging.info(
@@ -635,6 +666,7 @@ class BSplineContourRefiner(ContourRefinerBase):
             ),
             persistent=False,
         )
+        self._set_template_topology(num_points=len(initial_contour), device=initial_contour.device)
         self.capture_initial_state()
 
     @property
@@ -794,7 +826,7 @@ def create_tangential_smoothing_refiner(
     return refiner_class(initial_contour, props, template_model)
 
 
-class TangentialSmoothingContourRefiner(ContourRefiner):
+class TangentialSmoothingContourRefiner(VertexContourRefiner):
     """
     A specialized refiner that enforces Tangential Smoothing to prevent shrinking.
 
@@ -844,6 +876,8 @@ class RBFContourRefiner(ContourRefinerBase):
     This approach is mesh-free and generalizes trivially to 3D.
     """
 
+    REFINER_TYPE = RefinerType.RBF
+
     def __init__(
         self,
         initial_contour: torch.Tensor,
@@ -863,7 +897,7 @@ class RBFContourRefiner(ContourRefinerBase):
 
         # 1. Select Control Points (Centers)
         # Simple strided subsampling of the initial contour
-        num_cp = props.rbf_num_control_points
+        num_cp = props.num_control_points
         num_points = len(initial_contour)
         if num_cp >= num_points:
             indices = torch.arange(num_points, device=initial_contour.device)
@@ -880,7 +914,7 @@ class RBFContourRefiner(ContourRefinerBase):
         self.rbf_weights = nn.Parameter(torch.zeros_like(self.control_points), requires_grad=True)
 
         # 2a. Heuristic for Sigma if requested (<= 0.0)
-        sigma = props.rbf_kernel_sigma
+        sigma = props.kernel_sigma
         if sigma <= 0.0:
             if num_cp > 1:
                 # Compute average distance to nearest neighbor for control points
@@ -940,12 +974,42 @@ class RBFContourRefiner(ContourRefinerBase):
                 w_decay = 0.001
                 self.loss_fn.set_weight(RegularizerType.RBF_WEIGHT_DECAY, w_decay)
                 print(f"Setting RBF weight decay to {w_decay}")
+        self._set_template_topology(num_points=len(initial_contour), device=initial_contour.device)
         self.capture_initial_state()
+
+    def _effective_control_points_and_weights(self) -> tuple[torch.Tensor, torch.Tensor]:
+        """
+        Returns control points / weights used in kernel eval.
+        Ghost points are wrapped copies of seam CPs with shared weights (not independent params).
+        """
+
+        cp = self.control_points
+        w = self.rbf_weights
+
+        use_ghost = self.props.closed_contour and self.props.use_ghost_control_points
+
+        if not use_ghost:
+            return cp, w
+
+        k = max(0, int(self.props.ghost_width))
+        n = int(cp.shape[0])
+        if k == 0 or n < 2:
+            return cp, w
+
+        k = min(k, n - 1)
+        idx = torch.arange(n, device=cp.device)
+        wrap_idx = torch.cat([idx[-k:], idx, idx[:k]], dim=0)
+        return cp[wrap_idx], w[wrap_idx]
 
     @property
     def contour(self) -> torch.Tensor:
-        # V' = V + Phi @ W
-        displacement = self.kernel_matrix @ self.rbf_weights
+
+        cp_eff, w_eff = self._effective_control_points_and_weights()
+        dists = torch.cdist(self.initial_contour, cp_eff)  # (N, K_eff)
+        kernel = torch.exp(-(dists.pow(2)) / (2 * self.sigma**2))
+        kernel = kernel / (kernel.sum(dim=1, keepdim=True) + 1e-8)
+        displacement = kernel @ w_eff
+
         return self.initial_contour + displacement
 
     @property
@@ -974,13 +1038,14 @@ class RBFContourRefiner(ContourRefinerBase):
         """Computes the displacement vector at arbitrary points in space."""
         # points: (M, 2)
         # control_points: (K, 2)
-        dists = torch.cdist(points, self.control_points)  # (M, K)
+        cp_eff, w_eff = self._effective_control_points_and_weights()
+        dists = torch.cdist(points, cp_eff)  # (M, K)
         # Kernel
         kernel_matrix = torch.exp(-(dists.pow(2)) / (2 * self.sigma**2))
         # Normalize (Partition of Unity)
         kernel_sum = kernel_matrix.sum(dim=1, keepdim=True)
         normalized_kernel = kernel_matrix / (kernel_sum + 1e-8)
-        return normalized_kernel @ self.rbf_weights
+        return normalized_kernel @ w_eff
 
     def visualize_rbf_field(self, ax: Any | None = None, title: str = "RBF Deformation"):
         """Visualizes the RBF control points and displacement vectors."""

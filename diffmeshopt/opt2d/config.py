@@ -2,7 +2,7 @@ from copy import deepcopy
 from dataclasses import dataclass, field
 from enum import Enum
 
-from diffmeshopt.opt2d.enums import DataLossType, RefinerType, RegularizerType
+from diffmeshopt.opt2d.enums import DataLossType, RefinerType, RegularizerType, TemplateType
 
 
 class ReplaceableMixin:
@@ -231,6 +231,9 @@ class ContourRefinerProps(ReplaceableMixin):
     # Geometry
     laplacian_window_size: int = 3
     shape_loss_weight: float = 1.0
+    # Contour closing
+    closed_contour: bool = True
+    cyclic_pad_width: int = 2
     # Penalty for asymmetric profiles
     center_symmetry_weight: float = 0.0
     # Adaptive regularization (optional)
@@ -309,7 +312,7 @@ class BSplineContourRefinerProps(ContourRefinerProps):
     """Properties for the BSplineContourRefiner."""
 
     refiner_type: RefinerType = RefinerType.BSPLINE
-    contour_num_control_points: int = 64
+    num_control_points: int = 64
 
 
 @dataclass(frozen=True)
@@ -317,8 +320,11 @@ class RBFContourRefinerProps(ContourRefinerProps):
     """Properties for the RBFContourRefiner."""
 
     refiner_type: RefinerType = RefinerType.RBF
-    rbf_num_control_points: int = 32
-    rbf_kernel_sigma: float = 0.0  # If <= 0.0, auto-calculated from control point spacing
+    num_control_points: int = 32
+    kernel_sigma: float = 0.0  # If <= 0.0, auto-calculated from control point spacing
+    # contour closing with ghost points
+    use_ghost_control_points: bool = True
+    ghost_width: int = 2
 
 
 @dataclass(frozen=True)
@@ -371,14 +377,14 @@ class TemplateProps(ReplaceableMixin):
 @dataclass(frozen=True)
 class BSplineTemplateProps(TemplateProps):
     # BSpline Template specific
-    bspline_num_control_points: int = 10
+    num_control_points: int = 10
 
 
 @dataclass(frozen=True)
 class NeuralFieldTemplateProps(TemplateProps):
     # Neural Field Template specific
-    neural_hidden_dim: int = 32
-    neural_num_layers: int = 2
+    hidden_dim: int = 32
+    num_layers: int = 2
 
 
 @dataclass(frozen=True)

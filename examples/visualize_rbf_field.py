@@ -22,8 +22,8 @@ def visualize_field():
     )
 
     props = RBFContourRefinerProps(
-        rbf_num_control_points=8,
-        rbf_kernel_sigma=20.0,  # Large sigma for global influence
+        num_control_points=8,
+        kernel_sigma=20.0,  # Large sigma for global influence
     )
     template = TemplateModelFactory.create("fixed", TemplateProps())
     refiner = RBFContourRefiner(initial_contour, props, template)

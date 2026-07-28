@@ -35,8 +35,8 @@ from diffmeshopt.opt2d.config import (
 from diffmeshopt.opt2d.evaluation import compute_contour_metrics
 from diffmeshopt.opt2d.refiner import (
     BSplineContourRefiner,
-    ContourRefiner,
     RBFContourRefiner,
+    VertexContourRefiner,
 )
 from diffmeshopt.opt2d.template import TemplateModelFactory, TemplateType
 from diffmeshopt.opt2d.trainer import OptimizationTrainer, TrainerConfig
@@ -204,12 +204,12 @@ class ExperimentRunner:
             refiner_props = ContourRefinerProps(**common_args)
         elif refiner_mode == "bspline":
             refiner_props = BSplineContourRefinerProps(
-                contour_num_control_points=use("num_cp"), **common_args
+                num_control_points=use("num_cp"), **common_args
             )
         elif refiner_mode == "rbf":
             refiner_props = RBFContourRefinerProps(
-                rbf_num_control_points=use("num_cp"),
-                rbf_kernel_sigma=use("rbf_sigma"),
+                num_control_points=use("num_cp"),
+                kernel_sigma=use("rbf_sigma"),
                 **common_args,
             )
         else:
@@ -241,7 +241,7 @@ class ExperimentRunner:
             template_props = TemplateProps(**t_args)
         elif t_mode == "bspline":
             template_props = BSplineTemplateProps(
-                bspline_num_control_points=max(4, use("num_cp") // 4),  # Heuristic
+                num_control_points=max(4, use("num_cp") // 4),  # Heuristic
                 **t_args,
             )
         elif t_mode == "neural":
@@ -300,7 +300,7 @@ class ExperimentRunner:
 
         # Refiner
         if params["refiner"] == "vertex":
-            refiner = ContourRefiner(contour_t, refiner_props, template_model)
+            refiner = VertexContourRefiner(contour_t, refiner_props, template_model)
         elif params["refiner"] == "bspline":
             refiner = BSplineContourRefiner(contour_t, refiner_props, template_model)
         elif params["refiner"] == "rbf":

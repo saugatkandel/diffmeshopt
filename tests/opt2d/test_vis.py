@@ -177,7 +177,7 @@ def test_plot_rbf_deformation(mock_plt):
 def test_refiner_visualize_rbf_field(mock_plt):
     """Test the integration method on the refiner."""
     initial_contour = torch.rand((10, 2))
-    props = RBFContourRefinerProps(rbf_num_control_points=5)
+    props = RBFContourRefinerProps(num_control_points=5)
     template = FixedTemplateModel(TemplateProps())
     refiner = RBFContourRefiner(initial_contour, props, template)
 

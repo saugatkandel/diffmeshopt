@@ -36,7 +36,7 @@ from diffmeshopt.opt2d.config import (
     TemplateProps,
 )
 from diffmeshopt.opt2d.evaluation import compute_contour_metrics
-from diffmeshopt.opt2d.refiner import ContourRefiner
+from diffmeshopt.opt2d.refiner import VertexContourRefiner
 from diffmeshopt.opt2d.regularizer_recipes import TANGENTIAL_SMOOTHING_VERTEX
 from diffmeshopt.opt2d.template import TemplateModelFactory
 
@@ -95,7 +95,7 @@ def analyze_weights():
             profile_length=21,
             initial_loss_weights=loss_weights,
         )
-        refiner = ContourRefiner(initial_contour.clone(), props, template)
+        refiner = VertexContourRefiner(initial_contour.clone(), props, template)
 
         for _ in range(50):
             refiner.step(image)
@@ -110,15 +110,13 @@ def analyze_weights():
         perimeter = edge_lengths.sum().item()
         edge_var = torch.var(edge_lengths).item()
 
-        results.append(
-            {
-                "weight": w,
-                "contour": final.detach().cpu().numpy(),
-                "chamfer": metrics["mean_dist"],
-                "perimeter": perimeter,
-                "edge_var": edge_var,
-            }
-        )
+        results.append({
+            "weight": w,
+            "contour": final.detach().cpu().numpy(),
+            "chamfer": metrics["mean_dist"],
+            "perimeter": perimeter,
+            "edge_var": edge_var,
+        })
 
     # 3. Plot
     fig = plt.figure(figsize=(16, 10))

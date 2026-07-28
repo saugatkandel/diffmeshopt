@@ -30,7 +30,7 @@ from diffmeshopt.opt2d.config import (
     RegularizerType,
     TemplateProps,
 )
-from diffmeshopt.opt2d.refiner import ContourRefiner
+from diffmeshopt.opt2d.refiner import VertexContourRefiner
 from diffmeshopt.opt2d.regularizer_recipes import TANGENTIAL_SMOOTHING_VERTEX
 from diffmeshopt.opt2d.template import TemplateModelFactory
 
@@ -102,12 +102,12 @@ def analyze_templates():
         (
             "bspline",
             "bspline",
-            BSplineTemplateProps(sigma=1.5, peak_dist=peak_dist, bspline_num_control_points=16),
+            BSplineTemplateProps(sigma=1.5, peak_dist=peak_dist, num_control_points=16),
         ),
         (
             "neural",
             "neural",
-            NeuralFieldTemplateProps(sigma=1.5, peak_dist=peak_dist, neural_hidden_dim=32),
+            NeuralFieldTemplateProps(sigma=1.5, peak_dist=peak_dist, hidden_dim=32),
         ),
     ]
 
@@ -158,7 +158,7 @@ def analyze_templates():
         template_model = TemplateModelFactory.create(
             mode, t_props, num_vertices=len(contour), image_shape=image.shape[-2:]
         )
-        refiner = ContourRefiner(contour.clone(), props, template_model)
+        refiner = VertexContourRefiner(contour.clone(), props, template_model)
 
         history = []
         for _ in tqdm(range(1000), desc=name, leave=False):

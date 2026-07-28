@@ -15,22 +15,25 @@ from diffmeshopt.opt2d.loss import LaplacianSmoothingLoss
 class TemplateModelFactory:
     @staticmethod
     def create(
-        mode: str | TemplateType, props, num_vertices: int = None, image_shape: tuple = None
+        template_type: str | TemplateType,
+        props,
+        num_vertices: int = None,
+        image_shape: tuple = None,
     ):
-        logging.info(f"Creating template model: {mode}")
+        logging.info(f"Creating template model: {template_type}")
         # Convert string to Enum if necessary
-        if isinstance(mode, str):
+        if isinstance(template_type, str):
             try:
-                mode = TemplateType(mode.lower())
+                template_type = TemplateType(template_type.lower())
             except ValueError:
                 raise ValueError(
                     "Unknown template_mode: "
-                    + f"{mode}. Available modes: {[m.value for m in TemplateType]}"
+                    + f"{template_type}. Available modes: {[m.value for m in TemplateType]}"
                 ) from TemplateType
 
         model = None
         # Validation and Instantiation
-        if mode == TemplateType.PER_POINT:
+        if template_type == TemplateType.PER_POINT:
             if num_vertices is None:
                 raise ValueError("num_vertices is required for PER_POINT mode")
             model = PerPointTemplateModel(num_vertices, props)
@@ -40,38 +43,40 @@ class TemplateModelFactory:
         if image_shape is not None and len(image_shape) == 3:
             spatial_dim = 3
 
-        elif mode == TemplateType.GLOBAL:
+        elif template_type == TemplateType.GLOBAL:
             model = GlobalOptimizableTemplateModel(props)
 
-        elif mode == TemplateType.FIXED:
+        elif template_type == TemplateType.FIXED:
             model = FixedTemplateModel(props)
 
-        elif mode == TemplateType.BSPLINE:
+        elif template_type == TemplateType.BSPLINE:
             model = BSplineTemplateModel(props)
 
-        elif mode == TemplateType.NEURAL:
+        elif template_type == TemplateType.NEURAL:
             if image_shape is None:
                 raise ValueError("image_shape (H, W) is required for NEURAL mode")
             model = NeuralFieldTemplateModel(props, image_shape, spatial_dim=spatial_dim)
 
-        elif mode == TemplateType.GRID:
+        elif template_type == TemplateType.GRID:
             if image_shape is None:
                 raise ValueError("image_shape (H, W) is required for GRID mode")
             model = GridTemplateModel(props, image_shape, spatial_dim=spatial_dim)
 
-        elif mode == TemplateType.SPLAT:
+        elif template_type == TemplateType.SPLAT:
             if image_shape is None:
                 raise ValueError("image_shape (H, W) is required for SPLAT mode")
             model = GaussianSplatTemplateModel(props, image_shape, spatial_dim=spatial_dim)
 
         if model is not None:
-            model.mode = mode
+            model.mode = template_type
             return model
 
-        raise ValueError(f"Factory implementation missing for mode: {mode}")
+        raise ValueError(f"Factory implementation missing for mode: {template_type}")
 
 
 class BaseTemplateModel(nn.Module, abc.ABC):
+    TEMPLATE_TYPE: TemplateType | None = None
+
     def __init__(self, props: TemplateProps):
         super().__init__()
         self.props = props
@@ -277,6 +282,8 @@ class BaseTemplateModel(nn.Module, abc.ABC):
 
 
 class FixedTemplateModel(BaseTemplateModel):
+    TEMPLATE_TYPE: TemplateType = TemplateType.FIXED
+
     def get_params(
         self,
         batch_indices: torch.Tensor | None = None,
@@ -300,6 +307,7 @@ class FixedTemplateModel(BaseTemplateModel):
 
 
 class GlobalOptimizableTemplateModel(BaseTemplateModel):
+    TEMPLATE_TYPE: TemplateType = TemplateType.GLOBAL
     """Single set of template parameters shared across all vertices.
 
     This is an explicit parameterization: parameters are learned directly.
@@ -353,6 +361,7 @@ class GlobalOptimizableTemplateModel(BaseTemplateModel):
 
 
 class PerPointTemplateModel(BaseTemplateModel):
+    TEMPLATE_TYPE: TemplateType = TemplateType.PER_POINT
     """Independent template parameters at each vertex.
 
     This is an explicit parameterization with spatial regularization.
@@ -488,6 +497,7 @@ class PerPointTemplateModel(BaseTemplateModel):
 
 
 class BSplineTemplateModel(BaseTemplateModel):
+    TEMPLATE_TYPE: TemplateType = TemplateType.BSPLINE
     """Template parameters vary smoothly along contour via B-spline interpolation.
 
     This is an explicit parameterization with built-in smoothness.
@@ -656,6 +666,8 @@ class BSplineTemplateModel(BaseTemplateModel):
 
 
 class NeuralFieldTemplateModel(BaseTemplateModel):
+    TEMPLATE_TYPE: TemplateType = TemplateType.NEURAL
+
     """Template parameters as a learned continuous function of spatial position.
 
     This is an implicit (residual) parameterization.
@@ -730,6 +742,7 @@ class NeuralFieldTemplateModel(BaseTemplateModel):
 
 
 class GridTemplateModel(BaseTemplateModel):
+    TEMPLATE_TYPE: TemplateType = TemplateType.GRID
     """Template parameters interpolated from a learned spatial grid.
 
     This is an implicit (residual) parameterization.
@@ -803,6 +816,8 @@ class GridTemplateModel(BaseTemplateModel):
 
 
 class GaussianSplatTemplateModel(BaseTemplateModel):
+    TEMPLATE_TYPE: TemplateType = TemplateType.SPLAT
+
     """Template parameters interpolated from scattered Gaussian splats.
 
     This is an implicit (residual) parameterization.

@@ -11,9 +11,9 @@ from diffmeshopt.opt2d.config import (
 )
 from diffmeshopt.opt2d.refiner import (
     BSplineContourRefiner,
-    ContourRefiner,
     RBFContourRefiner,
     TangentialSmoothingContourRefiner,
+    VertexContourRefiner,
 )
 from diffmeshopt.opt2d.template import TemplateModelFactory
 
@@ -68,7 +68,7 @@ def test_optimization_convergence():
     template_props = TemplateProps(peak_dist=10.0, sigma=sigma)
     template_model = TemplateModelFactory.create("fixed", props=template_props)
 
-    refiner = ContourRefiner(
+    refiner = VertexContourRefiner(
         initial_contour=initial_contour,
         props=props,
         template_model=template_model,
@@ -178,7 +178,7 @@ def test_bspline_convergence():
         },
         profile_length=21,
         num_sampled_profiles=num_points,
-        contour_num_control_points=10,
+        num_control_points=10,
     )
 
     template_props = TemplateProps(peak_dist=10.0, sigma=sigma)
@@ -233,8 +233,8 @@ def test_rbf_convergence():
         },
         profile_length=21,
         num_sampled_profiles=num_points,
-        rbf_num_control_points=10,
-        rbf_kernel_sigma=20.0,
+        num_control_points=10,
+        kernel_sigma=20.0,
     )
 
     template_props = TemplateProps(peak_dist=10.0, sigma=sigma)

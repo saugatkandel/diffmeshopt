@@ -54,7 +54,7 @@ def test_per_point_template_model():
 
 def test_bspline_template_model():
     num_points = 50
-    props = BSplineTemplateProps(peak_dist=10.0, sigma=2.0, bspline_num_control_points=5)
+    props = BSplineTemplateProps(peak_dist=10.0, sigma=2.0, num_control_points=5)
     model = TemplateModelFactory.create("bspline", props, num_vertices=num_points)
 
     # Check parameters
@@ -74,7 +74,7 @@ def test_bspline_template_model():
 
 
 def test_neural_field_template_model():
-    props = NeuralFieldTemplateProps(peak_dist=10.0, sigma=2.0, neural_hidden_dim=16)
+    props = NeuralFieldTemplateProps(peak_dist=10.0, sigma=2.0, hidden_dim=16)
     model = TemplateModelFactory.create("neural", props, image_shape=(100, 100))
 
     # Dummy coordinates (N, 2)

@@ -16,7 +16,7 @@ def test_rbf_weight_decay_loss():
     initial_contour = torch.stack([torch.arange(10, dtype=torch.float32), torch.zeros(10)], dim=1)
     # Props with specific weight decay
     props = RBFContourRefinerProps(
-        rbf_num_control_points=5,
+        num_control_points=5,
         initial_loss_weights={RegularizerType.RBF_WEIGHT_DECAY.value: 0.5},
     )
     template = FixedTemplateModel(TemplateProps())

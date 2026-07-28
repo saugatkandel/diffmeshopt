@@ -30,7 +30,7 @@ from diffmeshopt.opt2d.config import (
 )
 from diffmeshopt.opt2d.evaluation import compute_contour_metrics
 from diffmeshopt.opt2d.geometry import smooth_contour
-from diffmeshopt.opt2d.refiner import ContourRefiner
+from diffmeshopt.opt2d.refiner import VertexContourRefiner
 from diffmeshopt.opt2d.template import TemplateModelFactory
 
 
@@ -80,7 +80,7 @@ def analyze_vertex_resolution():
             profile_length=21,
             regularization_strategy=RegularizationStrategy.TANGENTIAL_SMOOTHING,
         )
-        refiner = ContourRefiner(initial_contour.clone(), props, template)
+        refiner = VertexContourRefiner(initial_contour.clone(), props, template)
 
         final_losses = {}
         for _ in range(100):
@@ -88,14 +88,12 @@ def analyze_vertex_resolution():
 
         final = refiner.contour
         metrics = compute_contour_metrics(final, gt_contour)
-        results.append(
-            {
-                "num_verts": num_verts,
-                "contour": final.detach().cpu().numpy(),
-                "mean_dist": metrics["mean_dist"],
-                "losses": final_losses,
-            }
-        )
+        results.append({
+            "num_verts": num_verts,
+            "contour": final.detach().cpu().numpy(),
+            "mean_dist": metrics["mean_dist"],
+            "losses": final_losses,
+        })
 
     # --- Visualization ---
     fig = plt.figure(figsize=(16, 10))

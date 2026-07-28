@@ -87,7 +87,7 @@ def analyze_bspline_control_points():
             num_steps=100,
             learning_rate=0.5,
             profile_length=21,
-            contour_num_control_points=num_cp,
+            num_control_points=num_cp,
             regularization_strategy=RegularizationStrategy.TANGENTIAL_SMOOTHING,
         )
         refiner = BSplineContourRefiner(initial_contour.clone(), props, template)
@@ -98,14 +98,12 @@ def analyze_bspline_control_points():
 
         final = refiner.contour
         metrics = compute_contour_metrics(final, gt_contour)
-        results.append(
-            {
-                "num_cp": num_cp,
-                "contour": final.detach().cpu().numpy(),
-                "mean_dist": metrics["mean_dist"],
-                "losses": final_losses,
-            }
-        )
+        results.append({
+            "num_cp": num_cp,
+            "contour": final.detach().cpu().numpy(),
+            "mean_dist": metrics["mean_dist"],
+            "losses": final_losses,
+        })
 
     # --- Visualization ---
     fig = plt.figure(figsize=(16, 10))
