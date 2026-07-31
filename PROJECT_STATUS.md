@@ -106,6 +106,7 @@ We have implemented a 2D prototype for refining organelle segmentations using a 
 - **RBF Refiner (Wasserstein)**:
     - Promising direction; behavior improved in some runs.
     - Remaining failure mode: local underfit region (notably lower-left area in current test slice).
+- **Seam bump note**: After RBF-based refinement, I noticed a bump in the top left and assumed it might be caused by a mismatch between the start/end of the cyclic contour. I tried a cyclic/ghost-contour variant to address it, but that did not fix the issue. I did **not** explicitly visualize the seam to confirm that the bump aligned with the start/end point, so this remains unverified. I am setting this aside for now and focusing first on the alignment issue.
 - **Template Models**:
     - Symmetric bi-Gaussian generally outperforms asymmetric in current setup.
     - Neural template model showed high variation/instability in current tests.

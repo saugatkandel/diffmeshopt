@@ -1,9 +1,11 @@
+import re
 import subprocess
 from dataclasses import dataclass, field
-from datetime import datetime
 from enum import Enum
 from pathlib import Path
 from typing import Any
+
+_RUN_MARKER_RE = re.compile(r"<!--\s*run_id:\s*(?P<run_id>.*?)\s*-->")
 
 
 def get_git_branch_and_commit(repo_root: str | Path | None = None) -> tuple[str, str]:
@@ -285,29 +287,68 @@ class ExperimentLogEntry:
         return "\n".join(lines)
 
 
-def append_experiment_log(path: str | Path, entry: ExperimentLogEntry) -> None:
+def _find_run_entry_spans(content: str) -> list[tuple[str, int, int]]:
+    """Return (run_id, start, end) spans for concrete run entries.
+
+    Markers like <!-- run_id: <run_id> --> in the template section are ignored.
+    """
+    matches = list(_RUN_MARKER_RE.finditer(content))
+    spans: list[tuple[str, int, int]] = []
+
+    for i, match in enumerate(matches):
+        run_id = match.group("run_id").strip()
+
+        # Ignore template placeholder marker.
+        if run_id.startswith("<") and run_id.endswith(">"):
+            continue
+
+        start = match.start()
+        end = matches[i + 1].start() if i + 1 < len(matches) else len(content)
+        spans.append((run_id, start, end))
+
+    return spans
+
+
+def upsert_experiment_log(path: str | Path, entry: ExperimentLogEntry) -> None:
+    """Insert or replace an experiment log block by unique run_id."""
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
 
     marker = f"<!-- run_id: {entry.run_id} -->"
-    block = f"{marker}\n{entry.to_markdown()}"
+    new_block = f"{marker}\n{entry.to_markdown()}".strip()
 
     if path.exists():
         existing = path.read_text()
-        if marker in existing:
-            start = existing.index(marker)
-            next_marker = existing.find("<!-- run_id:", start + len(marker))
-            if next_marker == -1:
-                end = len(existing)
-            else:
-                end = next_marker
-            content = existing[:start] + block + existing[end:]
-        else:
-            content = existing.rstrip() + "\n\n---\n\n" + block
-    else:
-        content = "# Experiment Log\n\n" + block
+        spans = _find_run_entry_spans(existing)
 
-    path.write_text(content.rstrip() + "\n")
+        if spans:
+            preamble = existing[: spans[0][1]].rstrip()
+            blocks: list[str] = []
+            replaced = False
+
+            for run_id, start, end in spans:
+                if run_id == entry.run_id:
+                    if not replaced:
+                        blocks.append(new_block)
+                        replaced = True
+                    # Skip duplicates for same run_id.
+                    continue
+                blocks.append(existing[start:end].strip())
+
+            if not replaced:
+                blocks.append(new_block)
+
+            content = preamble
+            if blocks:
+                content = (content.rstrip() + "\n\n---\n\n" + "\n\n---\n\n".join(blocks)).strip()
+        else:
+            # No concrete run entries yet; keep existing content as preamble.
+            preamble = existing.rstrip()
+            content = (preamble + "\n\n---\n\n" + new_block).strip()
+    else:
+        content = ("# Experiment Log\n\n---\n\n" + new_block).strip()
+
+    path.write_text(content + "\n")
 
 
 def create_experiment_log_entry_from_trainer(

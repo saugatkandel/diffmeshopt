@@ -185,32 +185,43 @@ class AdaptiveRegularizationProps(ReplaceableMixin):
 
 @dataclass(frozen=True)
 class ContourRefinerProps(ReplaceableMixin):
-    """Properties for the ContourRefiner.
+    """Properties for contour refiners.
 
-    Regularization weights can be overridden via initial_regularization_weights dict.
-    Keys must match those in RegularizerDefaults (single source of truth).
+    This configuration is shared by vertex, B-spline, and RBF refiners.
 
-    When adaptive_reg is enabled:
-    - Weights start from static defaults in RegularizerDefaults
-    - Can be overridden with initial_regularization_weights
-    - Adapt during optimization according to target_ratios
+    Regularization weights can be overridden via `initial_regularization_weights`.
+    Keys must match `RegularizerType` values (either enum members or their string
+    values). These overrides are validated at construction time.
 
-    When adaptive_reg is None/disabled:
-    - Uses static defaults from RegularizerDefaults
-    - Can be overridden with initial_regularization_weights
+    When `adaptive_reg` is enabled:
+    - Weights start from static defaults in `RegularizerDefaults`
+    - Can be overridden with `initial_regularization_weights`
+    - Adapt during optimization according to `target_ratio`
+
+    When `adaptive_reg` is disabled or None:
+    - Uses static defaults from `RegularizerDefaults`
+    - Can still be overridden with `initial_regularization_weights`
 
     Parameters:
+        refiner_type (RefinerType): Which contour refiner this config applies to.
         num_steps (int): Number of optimization steps.
         learning_rate (float): Learning rate for the optimizer (Adam).
-        initial_regularization_weights (dict): Overrides for default regularizer weights.
-                                     Keys should match RegularizerType values.
+        data_loss_type (DataLossType): Data term used by the refiner.
+        initial_regularization_weights (dict[str, float]): Overrides for default
+            regularizer weights. Keys must match `RegularizerType` values.
         profile_length (int): Length of the sampled intensity profile in pixels.
         profile_width (int): Width of the sampling strip (averaging across tangent).
-        sample_step (float): Step size between samples in the profile (usually 1.0 pixel).
+        sample_step (float): Step size between samples in the profile.
         num_sampled_profiles (int): Number of profiles to sample stochastically per step.
         laplacian_window_size (int): Window size for Laplacian smoothing of the contour.
-        shape_loss_weight (float): Weight for the template shape consistency loss (part of data term).
-        adaptive_reg (AdaptiveRegularizationProps | None): Configuration for adaptive weights.
+        shape_loss_weight (float): Weight for the template shape consistency loss.
+        closed_contour (bool): Whether the contour should be treated as cyclic/closed.
+        cyclic_pad_width (int): Number of wrapped points used for cyclic padding
+            in seam-sensitive local operations.
+        center_symmetry_weight (float): Penalty for asymmetric profiles.
+        adaptive_reg (AdaptiveRegularizationProps | None): Configuration for adaptive
+            regularization weight adjustment.
+        regularization_strategy (RegularizationStrategy): High-level regularization mode.
         _reg_defaults (RegularizerDefaults): Internal registry of default weights.
     """
 
@@ -218,62 +229,73 @@ class ContourRefinerProps(ReplaceableMixin):
     num_steps: int = 100
     learning_rate: float = 0.1
     data_loss_type: DataLossType = DataLossType.BIGAUSSIAN_CORRELATION
-    # Optional overrides for initial regularization weights (dict keys match RegularizerDefaults)
-    # Note: data loss always has weight=1.0 and cannot be overridden
-    initial_regularization_weights: dict[str, float] = field(
-        default_factory=dict  # Regularizers: if not specified, uses RegularizerDefaults
-    )
-    # Sampling
+    initial_regularization_weights: dict[str, float] = field(default_factory=dict)
     profile_length: int = 51
     profile_width: int = 5
     sample_step: float = 1.0
     num_sampled_profiles: int = 256
-    # Geometry
     laplacian_window_size: int = 3
     shape_loss_weight: float = 1.0
-    # Contour closing
     closed_contour: bool = True
     cyclic_pad_width: int = 2
-    # Penalty for asymmetric profiles
     center_symmetry_weight: float = 0.0
-    # Adaptive regularization (optional)
     adaptive_reg: AdaptiveRegularizationProps | None = None
     regularization_strategy: RegularizationStrategy = RegularizationStrategy.TANGENTIAL_SMOOTHING
-    # Global regularizer defaults (single source of truth)
     _reg_defaults: RegularizerDefaults = field(default_factory=RegularizerDefaults.get_defaults)
 
+    def __post_init__(self) -> None:
+        self.validate()
+
+    def validate(self) -> None:
+        """Validate ContourRefinerProps configuration.
+
+        Ensures that every key in `initial_regularization_weights` matches a valid
+        regularizer defined by `RegularizerType`.
+        """
+        valid_regularizers = RegularizerDefaults.get_all_regularizer_names()
+
+        for key in self.initial_regularization_weights.keys():
+            if isinstance(key, RegularizerType):
+                key_name = key.value
+            elif isinstance(key, str):
+                key_name = key
+            else:
+                raise TypeError(
+                    "initial_regularization_weights keys must be RegularizerType or str, "
+                    f"got {type(key).__name__}"
+                )
+
+            if key_name not in valid_regularizers:
+                raise ValueError(
+                    f"Unknown regularizer '{key_name}'. "
+                    f"Valid regularizers are: {sorted(valid_regularizers)}"
+                )
+
     def get_initial_weight(self, loss_name: RegularizerType | str) -> float:
-        """Get initial weight for a regularizer at optimization start.
+        """Get the initial weight for a regularizer at optimization start.
 
-        Priority order (first match wins):
-        1. Explicit value in initial_regularization_weights dict (user override)
-        2. Static default from RegularizerDefaults (global defaults)
-        3. Zero if regularizer not in RegularizerDefaults (unknown loss)
-
-        This method is called once at ContourLoss initialization.
-        If adaptive_reg is enabled, weights will be adjusted during optimization.
+        Priority order:
+        1. Explicit override in `initial_regularization_weights`
+        2. Static default from `RegularizerDefaults`
+        3. 0.0 if the regularizer is unknown
 
         Args:
-            loss_name: Regularizer name (RegularizerType enum or string)
+            loss_name: Regularizer name as an enum member or string.
 
         Returns:
-            Initial weight value (float >= 0)
+            Initial weight value.
         """
-        # Convert string to RegularizerType if needed
         if isinstance(loss_name, str):
             try:
                 loss_name = RegularizerType(loss_name)
             except ValueError:
-                # Unknown loss name, return 0.0
                 return 0.0
 
-        # Check if explicitly overridden (support both string and enum keys)
         if loss_name in self.initial_regularization_weights:
             return self.initial_regularization_weights[loss_name]
         if loss_name.value in self.initial_regularization_weights:
             return self.initial_regularization_weights[loss_name.value]
 
-        # Use static default from single source of truth
         if loss_name in self._reg_defaults.regularizers:
             return self._reg_defaults.regularizers[loss_name].static_weight
 

@@ -81,4 +81,5 @@
     "ruff.lineLength": null,
     "notebook.defaultFormatter": "charliermarsh.ruff",
     "notebook.formatOnSave.enabled": true,
+    "python.terminal.useEnvFile": true,
 }
